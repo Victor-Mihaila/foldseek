@@ -43,7 +43,7 @@ int alignStructure(StructureSmithWaterman & structureSmithWaterman,
                    unsigned int querySeqLen, unsigned int targetSeqLen,
                    EvalueNeuralNet & evaluer, std::pair<double, double> muLambda,
                    Matcher::result_t & res, std::string & backtrace,
-                   Parameters & par) {
+                   Parameters & par, bool useReverseScore) {
 
     float seqId = 0.0;
     backtrace.clear();
@@ -62,15 +62,16 @@ int alignStructure(StructureSmithWaterman & structureSmithWaterman,
         return -1;
     }
 
-    StructureSmithWaterman::s_align revAlign;
-    //if(structureSmithWaterman.isProfileSearch()){
-    //    revAlign.score1 = 0;
-    //} else {
-    revAlign = reverseStructureSmithWaterman.alignScoreEndPos<StructureSmithWaterman::PROFILE>(tSeqAA.numSequence, tSeq3Di.numSequence,
-                                                                  targetSeqLen, par.gapOpen.values.aminoacid(),
-                                                                  par.gapExtend.values.aminoacid(), querySeqLen / 2, db12StSeq);
-    //}
-    int32_t score = static_cast<int32_t>(align.score1) - static_cast<int32_t>(revAlign.score1);
+    int32_t score;
+    if (useReverseScore) {
+        StructureSmithWaterman::s_align revAlign;
+        revAlign = reverseStructureSmithWaterman.alignScoreEndPos<StructureSmithWaterman::PROFILE>(tSeqAA.numSequence, tSeq3Di.numSequence,
+                                                                      targetSeqLen, par.gapOpen.values.aminoacid(),
+                                                                      par.gapExtend.values.aminoacid(), querySeqLen / 2, db12StSeq);
+        score = static_cast<int32_t>(align.score1) - static_cast<int32_t>(revAlign.score1);
+    } else {
+        score = static_cast<int32_t>(align.score1);
+    }
     align.evalue = evaluer.computeEvalueCorr(score, muLambda.first, muLambda.second);
     hasLowerEvalue = align.evalue > par.evalThr;
     if (hasLowerEvalue) {
@@ -125,7 +126,7 @@ int computeAlternativeAlignment(StructureSmithWaterman & structureSmithWaterman,
                                 unsigned int querySeqLen, unsigned int targetSeqLen,
                                 EvalueNeuralNet & evaluer, std::pair<double, double> muLambda,
                                 Matcher::result_t & result, Matcher::result_t & altRes,
-                                std::string & backtrace, Parameters & par) {
+                                std::string & backtrace, Parameters & par, bool useReverseScore) {
     const unsigned char xAAIndex = tSeqAA.subMat->aa2num[static_cast<int>('X')];
     const unsigned char x3DiIndex = tSeq3Di.subMat->aa2num[static_cast<int>('X')];
     for (int pos = result.dbStartPos; pos < result.dbEndPos; ++pos) {
@@ -137,7 +138,7 @@ int computeAlternativeAlignment(StructureSmithWaterman & structureSmithWaterman,
     }
     if (alignStructure(structureSmithWaterman, reverseStructureSmithWaterman,
                        tSeqAA, tSeq3Di, tSeq12St, querySeqLen, targetSeqLen,
-                       evaluer, muLambda, altRes, backtrace, par) == -1) {
+                       evaluer, muLambda, altRes, backtrace, par, useReverseScore) == -1) {
         return -1;
     }
     if (Alignment::checkCriteria(altRes, false, par.evalThr, par.seqIdThr, par.alnLenThr, par.covMode, par.covThr)) {
@@ -186,6 +187,7 @@ int structurealign(int argc, const char **argv, const Command& command) {
 
     bool target3Di12St = StructureUtil::is3Di12StDb(t3DiDbr.sequenceReader->getDbtype());
     bool query3Di12St  = StructureUtil::is3Di12StDb(q3DiDbr->sequenceReader->getDbtype());
+    bool use12StScoring = par.ss12st && query3Di12St && target3Di12St;
     bool db1CaExist = FileUtil::fileExists((par.db1 + "_ca.dbtype").c_str());
     bool db2CaExist = FileUtil::fileExists((par.db2 + "_ca.dbtype").c_str());
     if(Parameters::isEqualDbtype(tAADbr.getDbtype(), Parameters::DBTYPE_INDEX_DB)){
@@ -356,16 +358,18 @@ int structurealign(int argc, const char **argv, const Command& command) {
         std::vector<char> qSeq12StBuf;
         std::vector<char> tSeq3Di21Buf;
         std::vector<char> tSeq12StBuf;
-        if (query3Di12St || target3Di12St) {
-            if (query3Di12St) {
+        if (query3Di12St) {
+            qSeq3Di21Buf.reserve(par.maxSeqLen);
+            qSeq12StBuf.reserve(par.maxSeqLen);
+            if (use12StScoring) {
                 qSeq12St.reset(new Sequence(par.maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, (const BaseMatrix *) subMat12St, 0, false, par.compBiasCorrection));
-                qSeq3Di21Buf.reserve(par.maxSeqLen);
-                qSeq12StBuf.reserve(par.maxSeqLen);
             }
-            if (target3Di12St) {
+        }
+        if (target3Di12St) {
+            tSeq3Di21Buf.reserve(par.maxSeqLen);
+            tSeq12StBuf.reserve(par.maxSeqLen);
+            if (use12StScoring) {
                 tSeq12St.reset(new Sequence(par.maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, (const BaseMatrix *) subMat12St, 0, false, par.compBiasCorrection));
-                tSeq3Di21Buf.reserve(par.maxSeqLen);
-                tSeq12StBuf.reserve(par.maxSeqLen);
             }
         }
         std::string backtrace;
@@ -391,10 +395,12 @@ int structurealign(int argc, const char **argv, const Command& command) {
                 char *querySeq3Di = q3DiDbr->sequenceReader->getData(queryId, thread_idx);
                 unsigned int querySeqLen = q3DiDbr->sequenceReader->getSeqLen(queryId);
                 const char *querySeq3Di21 = querySeq3Di;
-                    if (query3Di12St) {
+                if (query3Di12St) {
                     StructureUtil::split3Di12St(querySeq3Di, querySeqLen, qSeq3Di21Buf, qSeq12StBuf, subMat3Di, *subMat12St, true);
                     querySeq3Di21 = qSeq3Di21Buf.data();
-                    qSeq12St->mapSequence(id, queryKey, qSeq12StBuf.data(), querySeqLen);
+                    if (use12StScoring) {
+                        qSeq12St->mapSequence(id, queryKey, qSeq12StBuf.data(), querySeqLen);
+                    }
                 }
                 qSeq3Di.mapSequence(id, queryKey, querySeq3Di21, querySeqLen);
                 qSeqAA.mapSequence(id, queryKey, querySeqAA, querySeqLen);
@@ -412,14 +418,14 @@ int structurealign(int argc, const char **argv, const Command& command) {
                 }
                 std::pair<double, double> muLambda = evaluer.predictMuLambda(qSeq3Di.numSequence, qSeq3Di.L);
                 structureSmithWaterman.ssw_init(&qSeqAA, &qSeq3Di, tinySubMatAA, tinySubMat3Di, &subMatAA,
-                                               query3Di12St ? qSeq12St.get() : NULL, tinySubMat12St);
+                                               use12StScoring ? qSeq12St.get() : NULL, use12StScoring ? tinySubMat12St : NULL);
                 qSeq3Di.reverse();
                 qSeqAA.reverse();
-                if (query3Di12St) {
+                if (use12StScoring) {
                     qSeq12St->reverse();
                 }
                 reverseStructureSmithWaterman.ssw_init(&qSeqAA, &qSeq3Di, tinySubMatAA, tinySubMat3Di, &subMatAA,
-                                                       query3Di12St ? qSeq12St.get() : NULL, tinySubMat12St);
+                                                       use12StScoring ? qSeq12St.get() : NULL, use12StScoring ? tinySubMat12St : NULL);
                 int passedNum = 0;
                 int rejected = 0;
                 while (*data != '\0' && passedNum < par.maxAccept && rejected < par.maxRejected) {
@@ -438,7 +444,9 @@ int structurealign(int argc, const char **argv, const Command& command) {
                     if (target3Di12St) {
                         StructureUtil::split3Di12St(targetSeq3Di, targetSeqLen, tSeq3Di21Buf, tSeq12StBuf, subMat3Di, *subMat12St);
                         targetSeq3Di21 = tSeq3Di21Buf.data();
-                        tSeq12St->mapSequence(targetId, dbKey, tSeq12StBuf.data(), targetSeqLen);
+                        if (use12StScoring) {
+                            tSeq12St->mapSequence(targetId, dbKey, tSeq12StBuf.data(), targetSeqLen);
+                        }
                     }
                     tSeq3Di.mapSequence(targetId, dbKey, targetSeq3Di21, targetSeqLen);
                     tSeqAA.mapSequence(targetId, dbKey, targetSeqAA, targetSeqLen);
@@ -448,9 +456,9 @@ int structurealign(int argc, const char **argv, const Command& command) {
                     }
                     Matcher::result_t res;
                     if(alignStructure(structureSmithWaterman, reverseStructureSmithWaterman,
-                                      tSeqAA, tSeq3Di, (tSeq12St) ? tSeq12St.get() : NULL,
+                                      tSeqAA, tSeq3Di, use12StScoring ? tSeq12St.get() : NULL,
                                       querySeqLen, targetSeqLen,
-                                      evaluer, muLambda, res, backtrace, par) == -1){
+                                      evaluer, muLambda, res, backtrace, par, par.useReverseScore) == -1){
                         rejected++;
                         continue;
                     }
@@ -499,10 +507,10 @@ int structurealign(int argc, const char **argv, const Command& command) {
                         while(altAli && moreAltAli){
                             Matcher::result_t altRes;
                             if(computeAlternativeAlignment(structureSmithWaterman, reverseStructureSmithWaterman,
-                                                           tSeqAA, tSeq3Di, (tSeq12St) ? tSeq12St.get() : NULL,
+                                                           tSeqAA, tSeq3Di, use12StScoring ? tSeq12St.get() : NULL,
                                                            querySeqLen, targetSeqLen,
                                                            evaluer, muLambda, res, altRes,
-                                                           backtrace, par) == -1) {
+                                                           backtrace, par, par.useReverseScore) == -1) {
                                 moreAltAli = false;
                                 continue;
                             }

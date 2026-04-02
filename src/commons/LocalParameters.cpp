@@ -47,7 +47,8 @@ LocalParameters::LocalParameters() :
         PARAM_MIN_ALIGNED_CHAINS(PARAM_MIN_ALIGNED_CHAINS_ID, "--min-aligned-chains", "Minimum threshold of aligned chains","save alignments with at least n chain aligned between query and target" ,typeid(int), (void *) &minAlignedChains, "^[0-9]{1}[0-9]*$"),
         PARAM_MULTIDOMAIN(PARAM_MULTIDOMAIN_ID, "--lolalign-multidomain", "MultiDomain Mode", "MultiDomain Mode LoLalign", typeid(int), (void *) &multiDomain, "^[0-1]{1}$"),
         PARAM_SUBMAT_12ST_SCALE(PARAM_SUBMAT_12ST_SCALE_ID, "--submat-12st-scale", "12st substitution matrix scale", "Scaling factor for 12st substitution matrix", typeid(float), (void *) &submat12stScale, "^[0-9]*(\\.[0-9]+)?$"),
-        PARAM_SS_12ST(PARAM_SS_12ST_ID, "--ss-12st", "Include 12-state alphabet", "Include 12-state structural alphabet in _ss database:\n0: disable\n1: enable", typeid(int), (void *) &ss12st, "^[0-1]{1}$")
+        PARAM_SS_12ST(PARAM_SS_12ST_ID, "--ss-12st", "Include 12-state alphabet", "Include 12-state structural alphabet in _ss database:\n0: disable\n1: enable", typeid(int), (void *) &ss12st, "^[0-1]{1}$"),
+        PARAM_USE_REVERSE_SCORE(PARAM_USE_REVERSE_SCORE_ID, "--use-reverse-score", "Use reverse score", "Subtract reverse alignment score from forward score:\n0: disable\n1: enable", typeid(int), (void *) &useReverseScore, "^[0-1]{1}$")
         {
     PARAM_ALIGNMENT_MODE.description = "How to compute the alignment:\n0: automatic\n1: only score and end_pos\n2: also start_pos and cov\n3: also seq.id";
     PARAM_ALIGNMENT_MODE.regex = "^[0-3]{1}$";
@@ -155,6 +156,8 @@ LocalParameters::LocalParameters() :
     structurerescorediagonal.push_back(&PARAM_TMSCORE_THRESHOLD_MODE);
     structurerescorediagonal.push_back(&PARAM_LDDT_THRESHOLD);
     structurerescorediagonal.push_back(&PARAM_ALIGNMENT_TYPE);
+    structurerescorediagonal.push_back(&PARAM_SS_12ST);
+    structurerescorediagonal.push_back(&PARAM_SUBMAT_12ST_SCALE);
     structurerescorediagonal = combineList(structurerescorediagonal, align);
 
     structurealign.push_back(&PARAM_TMSCORE_THRESHOLD);
@@ -164,6 +167,8 @@ LocalParameters::LocalParameters() :
     structurealign.push_back(&PARAM_ALIGNMENT_TYPE);
     structurealign.push_back(&PARAM_EXACT_TMSCORE);
     structurealign.push_back(&PARAM_SUBMAT_12ST_SCALE);
+    structurealign.push_back(&PARAM_SS_12ST);
+    structurealign.push_back(&PARAM_USE_REVERSE_SCORE);
     structurealign = combineList(structurealign, align);
 
     // strucclust
@@ -374,8 +379,11 @@ LocalParameters::LocalParameters() :
     // 12st substitution matrix scale
     submat12stScale = 2.1;
 
-    // include 12-state alphabet in _ss database
-    ss12st = 0;
+    // include 12-state alphabet in _ss database and use for scoring
+    ss12st = 1;
+
+    // subtract reverse alignment score from forward score
+    useReverseScore = 1;
 
     citations.emplace(CITATION_FOLDSEEK, "van Kempen, M., Kim, S.S., Tumescheit, C., Mirdita, M., Lee, J., Gilchrist, C.L.M., Söding, J., and Steinegger, M. Fast and accurate protein structure search with Foldseek. Nature Biotechnology, doi:10.1038/s41587-023-01773-0 (2023)");
     citations.emplace(CITATION_FOLDSEEK_MULTIMER, "Kim, W., Mirdita, M., Levy Karin, E., Gilchrist, C.L.M., Schweke, H., Söding, J., Levy, E., and Steinegger, M. Rapid and sensitive protein complex alignment with Foldseek-Multimer. Nature Methods, doi:10.1038/s41592-025-02593-7 (2025)");
