@@ -5,6 +5,9 @@
 
 #include "hpc_helpers/simple_allocation.cuh"
 
+#include "namespace.hpp"
+LIBMARV_NAMESPACE_BEGIN
+
 struct GpuDatabaseAllocationBase{
     virtual const char* getCharData() const = 0;
     virtual const SequenceLengthT* getLengthData() const = 0;
@@ -108,6 +111,6 @@ struct GpuDatabaseAllocationView : public GpuDatabaseAllocationBase{
     size_t numSubjects;
 };
 
-
+LIBMARV_NAMESPACE_END
 
 #endif

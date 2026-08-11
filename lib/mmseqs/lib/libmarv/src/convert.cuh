@@ -4,10 +4,13 @@
 #include <cctype>
 #include <cstring>
 
-namespace cudasw4{
+#include "ptx_wrappers.cuh"
+
+#include "namespace.hpp"
+LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
 
 struct ConvertAA_20{
-    #ifdef __CUDACC__
+    #if defined(__CUDACC__) || defined(__HIPCC__)
     __host__ __device__
     #endif
     char operator()(const char& AA) {
@@ -43,7 +46,7 @@ struct ConvertAA_20{
 };
 
 struct InverseConvertAA_20{
-    #ifdef __CUDACC__
+    #if defined(__CUDACC__) || defined(__HIPCC__)
     __host__ __device__
     #endif
     char operator()(const char& AA) {
@@ -75,7 +78,7 @@ struct InverseConvertAA_20{
 
 
 struct ConvertAA_20_CaseSensitive{
-    #ifdef __CUDACC__
+    #if defined(__CUDACC__) || defined(__HIPCC__)
     __host__ __device__
     #endif
     char operator()(const char& AA) {
@@ -133,7 +136,7 @@ struct ConvertAA_20_CaseSensitive{
 };
 
 struct InverseConvertAA_20_CaseSensitive{
-    #ifdef __CUDACC__
+    #if defined(__CUDACC__) || defined(__HIPCC__)
     __host__ __device__
     #endif
     char operator()(const char& AA) {
@@ -184,7 +187,7 @@ struct InverseConvertAA_20_CaseSensitive{
 };
 
 struct CaseSensitive_to_CaseInsensitive{
-    #ifdef __CUDACC__
+    #if defined(__CUDACC__) || defined(__HIPCC__)
     __host__ __device__
     #endif
     char operator()(const char& AA) {
@@ -192,7 +195,7 @@ struct CaseSensitive_to_CaseInsensitive{
     }
 
     //vectorized for 4 values packed in a single int
-    #ifdef __CUDACC__
+    #if defined(__CUDACC__) || defined(__HIPCC__)
     __host__ __device__
     #endif
     unsigned int operator()(const unsigned int& packed4) {
@@ -205,7 +208,7 @@ struct CaseSensitive_to_CaseInsensitive{
     Map lower-case encoded letters to "invalid letter"
 */
 struct ClampToInvalid{
-    #ifdef __CUDACC__
+    #if defined(__CUDACC__) || defined(__HIPCC__)
     __host__ __device__
     #endif
     char operator()(const char& AA) {
@@ -213,14 +216,18 @@ struct ClampToInvalid{
     }
 
     //vectorized for 4 values packed in a single int
-    #ifdef __CUDACC__
+    #if defined(__CUDACC__) || defined(__HIPCC__)
     __device__
     #endif
     unsigned int operator()(const unsigned int& packed4) {
         #ifdef __CUDA_ARCH__
 
         constexpr unsigned int mask20 = 0x14141414; // decimal 20 per byte
+        #ifdef HAS_BLACKWELL_INT8_PTX
+        return ptx_min_u8x4(packed4, mask20);
+        #else
         return __vminu4(packed4, mask20);
+        #endif
 
         #else
 
@@ -244,7 +251,7 @@ struct ClampToInvalid{
 
 
 struct ConvertAA_20_mmseqs_to_ncbi{
-    #ifdef __CUDACC__
+    #if defined(__CUDACC__) || defined(__HIPCC__)
     __host__ __device__
     #endif
     char operator()(const char& encodedAA) {
@@ -280,7 +287,7 @@ struct ConvertAA_20_mmseqs_to_ncbi{
 };
 
 struct ConvertAA_20_ncbi_to_mmseqs{
-    #ifdef __CUDACC__
+    #if defined(__CUDACC__) || defined(__HIPCC__)
     __host__ __device__
     #endif
     char operator()(const char& encodedAA) {
@@ -317,6 +324,6 @@ struct ConvertAA_20_ncbi_to_mmseqs{
 
 
 
-} //namespace cudasw4
+LIBMARV_NAMESPACE_WITH_NESTING_END
 
 #endif

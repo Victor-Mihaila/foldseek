@@ -33,7 +33,7 @@ std::vector<std::string> split(const std::string& str, char c){
 	return result;
 }
 
-void printScanResultPlain(std::ostream& os, const cudasw4::ScanResult& scanResult, const cudasw4::CudaSW4& cudaSW4){
+void printScanResultPlain(std::ostream& os, const libmarv::ScanResult& scanResult, const libmarv::CudaSW4& cudaSW4){
     const int n = scanResult.scores.size();
     for(int i = 0; i < n; i++){
         const auto referenceId = scanResult.referenceIds[i];
@@ -68,10 +68,10 @@ void printTSVHeader(std::ostream& os){
 
 void printScanResultTSV(
     std::ostream& os, 
-    const cudasw4::ScanResult& scanResult, 
-    const cudasw4::CudaSW4& cudaSW4, 
+    const libmarv::ScanResult& scanResult, 
+    const libmarv::CudaSW4& cudaSW4, 
     int64_t queryId,
-    cudasw4::SequenceLengthT queryLength,
+    libmarv::SequenceLengthT queryLength,
     std::string_view queryHeader
 ){
     constexpr char sep = '\t';
@@ -99,7 +99,7 @@ void printScanResultTSV(
 struct BatchOfQueries{
     std::vector<char> chars;               
     std::vector<std::size_t> offsets;  
-    std::vector<cudasw4::SequenceLengthT> lengths;  
+    std::vector<libmarv::SequenceLengthT> lengths;  
     std::vector<std::string> headers;  
 };
 
@@ -157,9 +157,9 @@ int main(int argc, char* argv[])
     helpers::PeerAccess peerAccess(deviceIds, false);
     peerAccess.enableAllPeerAccesses();
  
-    using MemoryConfig = cudasw4::MemoryConfig;
-    using ScanResult = cudasw4::ScanResult;
-    using ScanType = cudasw4::ScanType;
+    using MemoryConfig = libmarv::MemoryConfig;
+    using ScanResult = libmarv::ScanResult;
+    using ScanType = libmarv::ScanType;
 
     MemoryConfig memoryConfig;
     memoryConfig.maxBatchBytes = options.maxBatchBytes;
@@ -170,9 +170,9 @@ int main(int argc, char* argv[])
     //ScanType scanType = ScanType::Gapless;
     //ScanType scanType = ScanType::SW_Endpos;
 
-    std::shared_ptr<cudasw4::TargetSubjectIds> targetSubjectIds;
+    std::shared_ptr<libmarv::TargetSubjectIds> targetSubjectIds;
     if(options.subjectIdsFilename.has_value()){
-        targetSubjectIds = std::make_shared<cudasw4::TargetSubjectIds>(options.subjectIdsFilename.value());
+        targetSubjectIds = std::make_shared<libmarv::TargetSubjectIds>(options.subjectIdsFilename.value());
         // for(auto x : targetSubjectIds->subjectIds){
         //     std::cout << x << ", ";
         // }
@@ -192,26 +192,23 @@ int main(int argc, char* argv[])
     if(targetSubjectIds){
         numTopOutputs = targetSubjectIds->subjectIds.size();
     }
-    numTopOutputs = std::min(numTopOutputs, cudasw4::MaxNumberOfResults::value());
+    numTopOutputs = std::min(numTopOutputs, libmarv::MaxNumberOfResults::value());
     // std::cout << "Will output up to " << numTopOutputs << " results\n";
 
-    KernelConfigFilenames kernelConfigFilenames;
-    kernelConfigFilenames.gapless = options.kernelConfigsFile_gapless;
-    kernelConfigFilenames.sw = options.kernelConfigsFile_sw;
-
-    cudasw4::CudaSW4 cudaSW4(
+    libmarv::CudaSW4 cudaSW4(
         deviceIds, 
         numTopOutputs,
         options.blosumType, 
         memoryConfig, 
-        options.verbose,
-        kernelConfigFilenames
+        options.verbose
     );
 
     cudaSW4.setScanType(options.scanType);
     if(targetSubjectIds){
         cudaSW4.setTargetSubjectIds(targetSubjectIds);
     }
+    
+    cudaSW4.allowInt8(options.allowInt8);
 
     if(!options.usePseudoDB){
         if(options.verbose){
@@ -221,18 +218,18 @@ int main(int argc, char* argv[])
             helpers::CpuTimer timer_read_db("Read DB");
             constexpr bool writeAccess = false;
             const bool prefetchSeq = options.prefetchDBFile;
-            auto fullDB_tmp = std::make_shared<cudasw4::DB>(cudasw4::loadDB(options.dbPrefix, writeAccess, prefetchSeq));
+            auto fullDB_tmp = std::make_shared<libmarv::DB>(libmarv::loadDB(options.dbPrefix, writeAccess, prefetchSeq));
             if(options.verbose){
                 timer_read_db.print();
             }
 
             cudaSW4.setDatabase(fullDB_tmp);
-        }catch(cudasw4::LoadDBException& ex){
+        }catch(libmarv::LoadDBException& ex){
             if(options.verbose){
                 std::cout << "Failed to map db files. Using fallback db. Error message: " << ex.what() << "\n";
             }
             helpers::CpuTimer timer_read_db("Read DB");
-            auto fullDB_tmp = std::make_shared<cudasw4::DBWithVectors>(cudasw4::loadDBWithVectors(options.dbPrefix));
+            auto fullDB_tmp = std::make_shared<libmarv::DBWithVectors>(libmarv::loadDBWithVectors(options.dbPrefix));
             if(options.verbose){
                 timer_read_db.print();
             }
@@ -244,7 +241,7 @@ int main(int argc, char* argv[])
             std::cout << "Generating pseudo db\n";
         }
         helpers::CpuTimer timer_read_db("Generate DB");
-        auto fullDB_tmp = std::make_shared<cudasw4::PseudoDB>(cudasw4::loadPseudoDB(
+        auto fullDB_tmp = std::make_shared<libmarv::PseudoDB>(libmarv::loadPseudoDB(
             options.pseudoDBSize, 
             options.pseudoDBLength,
             options.pseudoDBSameSequence
@@ -285,7 +282,7 @@ int main(int argc, char* argv[])
                 const std::string& header = reader.getCurrentHeader();
                 const std::string& sequence = reader.getCurrentSequence();
 
-                cudasw4::DecodedQueryView queryView(sequence.data(), sequence.size());
+                libmarv::DecodedQueryView queryView(sequence.data(), sequence.size());
 
                 ScanResult scanResult = cudaSW4.scan(queryView, std::nullopt);
                 if(options.verbose){
@@ -356,9 +353,9 @@ int main(int argc, char* argv[])
                 std::cout << "Processing query " << query_num << " ... ";
                 std::cout.flush();
                 const size_t offset = batchOfQueries.offsets[query_num];
-                const cudasw4::SequenceLengthT length = batchOfQueries.lengths[query_num];
+                const libmarv::SequenceLengthT length = batchOfQueries.lengths[query_num];
                 const char* sequence = batchOfQueries.chars.data() + offset;
-                cudasw4::DecodedQueryView queryView(sequence, length);
+                libmarv::DecodedQueryView queryView(sequence, length);
                 ScanResult scanResult = cudaSW4.scan(queryView, std::nullopt);
                 scanResults[query_num] = scanResult;
                 if(options.verbose){
@@ -418,7 +415,7 @@ int main(int argc, char* argv[])
                     std::cout << "sequence: " << sequence << "\n";
                     std::cout << "Processing query " << 0 << " ... ";
                     std::cout.flush();
-                    cudasw4::DecodedQueryView queryView(sequence.data(), sequence.size());
+                    libmarv::DecodedQueryView queryView(sequence.data(), sequence.size());
                     ScanResult scanResult = cudaSW4.scan(queryView, std::nullopt);
                     if(options.verbose){
                         std::cout << "Done. Scan time: " << scanResult.stats.seconds << " s, " << scanResult.stats.gcups << " GCUPS\n";
@@ -447,7 +444,7 @@ int main(int argc, char* argv[])
                             const std::string& header = reader.getCurrentHeader();
                             const std::string& sequence = reader.getCurrentSequence();
 
-                            cudasw4::DecodedQueryView queryView(sequence.data(), sequence.size());
+                            libmarv::DecodedQueryView queryView(sequence.data(), sequence.size());
                             ScanResult scanResult = cudaSW4.scan(queryView, std::nullopt);
                             if(options.verbose){
                                 std::cout << "Done. Scan time: " << scanResult.stats.seconds << " s, " << scanResult.stats.gcups << " GCUPS\n";
