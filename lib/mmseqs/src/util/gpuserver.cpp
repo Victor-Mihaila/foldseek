@@ -46,7 +46,6 @@ int gpuserver(int argc, const char **argv, const Command& command) {
         lengths.emplace_back(dbr->getIndex()[id].length - 2);
     }
     offsets.emplace_back(offsets.back() + lengths.back());
-    int32_t maxTargetLength = lengths.back();
 
     BaseMatrix *subMat;
     if (Parameters::isEqualDbtype(dbrIdx.sequenceReader->getDbtype(), Parameters::DBTYPE_NUCLEOTIDES)) {
@@ -55,9 +54,7 @@ int gpuserver(int argc, const char **argv, const Command& command) {
         subMat = new SubstitutionMatrix(par.scoringMatrixFile.values.aminoacid().c_str(), 2.0, 0.0);
     }
 
-    Marv::AlignmentType type =  (par.prefMode == Parameters::PREF_MODE_UNGAPPED_AND_GAPPED) ?
-                                Marv::AlignmentType::GAPLESS_SMITH_WATERMAN : Marv::AlignmentType::GAPLESS;
-    Marv marv(dbr->getSize(), subMat->alphabetSize, maxTargetLength, par.maxResListLen, type);
+    Marv marv(dbr->getSize(), subMat->alphabetSize);
     void* h1 = marv.loadDb(
             dbr->getDataForFile(0), offsets.data(), lengths.data(), dbr->getDataSizeForFile(0)
     );
@@ -79,7 +76,21 @@ int gpuserver(int argc, const char **argv, const Command& command) {
         if (layout->state.load(std::memory_order_acquire) == GPUSharedMemory::READY) {
             std::atomic_thread_fence(std::memory_order_acquire);
 
-            Marv::Stats stats = marv.scan(reinterpret_cast<const char *>(layout->getQueryPtr()), layout->queryLen, layout->getProfilePtr(), layout->getResultsPtr());
+            // NOTE: server mode is 3Di-only; it has no 12st profile in the shared-memory layout.
+            Marv::Stats stats;
+            if (par.prefMode == Parameters::PREF_MODE_UNGAPPED_AND_GAPPED) {
+                stats = marv.search_scoreOnly_then_scoreEndpos_for_tops(
+                    layout->getResultsPtr(), reinterpret_cast<const char *>(layout->getQueryPtr()),
+                    layout->queryLen, layout->getProfilePtr(), par.maxResListLen, /*gop*/ -11, /*gex*/ -1,
+                    Marv::AlignmentType::GAPLESS, /*int8IsAllowed*/ true, /*handleOverflows*/ true,
+                    Marv::AlignmentType::SMITH_WATERMAN_ENDPOS, /*int8IsAllowed*/ false, /*handleOverflows*/ true);
+            } else {
+                stats = marv.search_scoreOnly(
+                    layout->getResultsPtr(), reinterpret_cast<const char *>(layout->getQueryPtr()),
+                    layout->queryLen, layout->getProfilePtr(), par.maxResListLen,
+                    Marv::AlignmentType::GAPLESS, /*gop*/ -11, /*gex*/ -1,
+                    /*int8IsAllowed*/ true, /*handleOverflows*/ true);
+            }
             layout->resultLen = stats.results;
 
             std::atomic_thread_fence(std::memory_order_release);

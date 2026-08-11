@@ -208,6 +208,11 @@ template <typename T> bool DBReader<T>::open(int accessType){
 
     compression = isCompressed(dbtype);
     padded = (getExtendedDbtype(dbtype) & Parameters::DBTYPE_EXTENDED_GPU);
+    // Foldseek can pack two structural alphabets into a single byte (3Di * 12 + 12st, so values
+    // run up to 251); such a DB is flagged with LocalParameters::DBTYPE_EXTENDED_3DI_12ST = 32 and
+    // stores those raw bytes on disk whether it is padded or not. getUnpadded()'s numeric->ASCII
+    // re-encoding assumes single-alphabet codes in 0..20 and must be skipped for that layout.
+    packedAlphabet = (getExtendedDbtype(dbtype) & 32) != 0;
 
     if(compression == COMPRESSED || padded){
         compressedBufferSizes = new size_t[threads];
@@ -558,6 +563,17 @@ template <typename T> size_t DBReader<T>::bsearch(const Index * index, size_t N,
 template <typename T> char* DBReader<T>::getUnpadded(size_t id, int thrIdx) {
     char *data = getDataUncompressed(id);
     size_t seqLen = getSeqLen(id);
+
+    if (packedAlphabet) {
+        // Packed two-alphabet bytes (up to 251) are the on-disk representation of the unpadded DB
+        // as well, and are decoded downstream by Sequence's remap tables. Hand them back verbatim;
+        // running them through CODE_TO_CHAR below would index a 21-entry table out of bounds.
+        // Only the trailing SIMD padding is dropped, which getSeqLen() already excludes.
+        memcpy(compressedBuffers[thrIdx], data, seqLen);
+        compressedBuffers[thrIdx][seqLen + 0] = '\n';
+        compressedBuffers[thrIdx][seqLen + 1] = '\0';
+        return compressedBuffers[thrIdx];
+    }
 
     static const char CODE_TO_CHAR[21] = {
             'A', /*  0 */ 'C', /*  1 */ 'D', /*  2 */

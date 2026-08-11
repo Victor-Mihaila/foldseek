@@ -298,6 +298,10 @@ endif ()
 if (ENABLE_CUDA)
     set(LIBRARY_ONLY 1 CACHE INTERNAL "" FORCE)
     include_directories(lib/libmarv/src)
+    # libmarv is vendored unmodified and still uses thrust::no_init, which CCCL 3 (CUDA 13)
+    # removed. Force-include a shim into libmarv's CUDA sources instead of patching them.
+    # See lib/marv_compat/marv_cccl_compat.h; drop both once libmarv supports CCCL 3.
+    add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:--pre-include=${CMAKE_CURRENT_SOURCE_DIR}/lib/marv_compat/marv_cccl_compat.h>)
     add_subdirectory(lib/libmarv/src EXCLUDE_FROM_ALL)
 endif ()
 
