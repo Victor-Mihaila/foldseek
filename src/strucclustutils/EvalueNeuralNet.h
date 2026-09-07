@@ -21,7 +21,7 @@ private:
     // the SCOP fold-level FP curve, matching the legacy (non-12st) convention E_corr = E_raw^b
     // with no multiplier (scale = 1). Exponent is the log-log slope through the origin, fit
     // over reported E_raw > 1e-4 (below that the null has essentially no observed FPs).
-    static constexpr double LEGACY_12ST_EVALUE_CORR_EXPONENT = 0.32;
+    static constexpr double LEGACY_12ST_EVALUE_CORR_EXPONENT = 1.0;
     static constexpr double LEGACY_12ST_EVALUE_CORR_SCALE = 1.0;
     static constexpr double WINDOWED_PRED_SLOPE = 0.5142189860343933;
     static constexpr double WINDOWED_PRED_INTERCEPT = 35.95916748046875;
