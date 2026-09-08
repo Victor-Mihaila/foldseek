@@ -100,7 +100,7 @@ QueryMatcher::~QueryMatcher(){
     delete kmerGenerator;
 }
 
-std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned int identityId, bool isNucleotide) {
+std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned int identityId, bool isNucleotide, Sequence *querySeq12St) {
     querySeq->resetCurrPos();
 //    std::cout << "Id: " << querySeq->getId() << std::endl;
     memset(scoreSizes, 0, SCORE_RANGE * sizeof(unsigned int));
@@ -117,8 +117,15 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned 
     }
     if(diagonalScoring == true){
         ungappedAlignment->createProfile(querySeq, compositionBias);
-        if (ungappedAlignmentAux != NULL && querySeq->numSequenceAux != NULL) {
-            ungappedAlignmentAux->createProfile(querySeq, NULL, querySeq->numSequenceAux);
+        if (ungappedAlignmentAux != NULL) {
+            if (querySeq12St != NULL) {
+                // profile query: UngappedAlignment::createProfile already handles
+                // DBTYPE_HMM_PROFILE natively (it reads getAlignmentProfile()), so the
+                // 12-state profile can be used directly.
+                ungappedAlignmentAux->createProfile(querySeq12St, NULL, NULL);
+            } else if (querySeq->numSequenceAux != NULL) {
+                ungappedAlignmentAux->createProfile(querySeq, NULL, querySeq->numSequenceAux);
+            }
         }
     }
     size_t resultSize = match(querySeq, compositionBias);
@@ -129,7 +136,7 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned 
     if (diagonalScoring) {
         // write diagonal scores in count value
         ungappedAlignment->align(foundDiagonals, resultSize);
-        if (ungappedAlignmentAux != NULL && querySeq->numSequenceAux != NULL) {
+        if (ungappedAlignmentAux != NULL && (querySeq12St != NULL || querySeq->numSequenceAux != NULL)) {
             for (size_t i = 0; i < resultSize; i++) {
                 scoreBackup[i] = foundDiagonals[i].count;
                 foundDiagonals[i].count = 0;
@@ -192,7 +199,7 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned 
             std::swap(resultReadPos, resultWritePos);
             if (scoreIsTruncated == true) {
                 memset(scoreSizes, 0, SCORE_RANGE * sizeof(unsigned int));
-                std::pair<size_t, unsigned int> rescoreResult = rescoreHits(querySeq, scoreSizes, resultReadPos, elementsCntAboveDiagonalThr, ungappedAlignment, maxDiagonalScoreThr);
+                std::pair<size_t, unsigned int> rescoreResult = rescoreHits(querySeq, querySeq12St, scoreSizes, resultReadPos, elementsCntAboveDiagonalThr, ungappedAlignment, maxDiagonalScoreThr);
                 size_t newResultSize = rescoreResult.first;
                 unsigned int maxSelfScoreMinusDiag = rescoreResult.second;
                 elementsCntAboveDiagonalThr = radixSortByScoreSize(scoreSizes, resultWritePos, 0, resultReadPos, newResultSize);
@@ -226,7 +233,7 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned 
                     // Now we have room for double-buffer rescoring
                     resultWritePos = resultReadPos + filteredSize;
                     memset(scoreSizes, 0, SCORE_RANGE * sizeof(unsigned int));
-                    std::pair<size_t, unsigned int> rescoreResult = rescoreHits(querySeq, scoreSizes, resultReadPos, filteredSize, ungappedAlignment, maxDiagonalScoreThr);
+                    std::pair<size_t, unsigned int> rescoreResult = rescoreHits(querySeq, querySeq12St, scoreSizes, resultReadPos, filteredSize, ungappedAlignment, maxDiagonalScoreThr);
                     size_t newResultSize = rescoreResult.first;
                     unsigned int maxSelfScoreMinusDiag = rescoreResult.second;
                     size_t elementsCntAboveDiagonalThr = radixSortByScoreSize(scoreSizes, resultWritePos, 0, resultReadPos, newResultSize);
@@ -596,14 +603,22 @@ size_t QueryMatcher::radixSortByScoreSize(const unsigned int * scoreSizes,
     return aboveThresholdCnt;
 }
 
-std::pair<size_t, unsigned int> QueryMatcher::rescoreHits(Sequence * querySeq, unsigned int * scoreSizes, CounterResult *results,
+std::pair<size_t, unsigned int> QueryMatcher::rescoreHits(Sequence * querySeq, Sequence * querySeq12St, unsigned int * scoreSizes, CounterResult *results,
                                                           size_t resultSize, UngappedAlignment *align, int lowerBoundScore) {
     size_t elements = 0;
     const unsigned char * query = querySeq->numSequence;
     int maxSelfScore = align->scoreSingleSequence(std::make_pair(query, querySeq->L), 0,0);
-    if (ungappedAlignmentAux != NULL && querySeq->numSequenceAux != NULL) {
-        const unsigned char *queryAux = querySeq->numSequenceAux;
-        maxSelfScore += ungappedAlignmentAux->scoreSingleSequence(std::make_pair(queryAux, querySeq->L), 0, 0);
+    if (ungappedAlignmentAux != NULL) {
+        // Self-score must cover both channels or the p-value normalisation is on a different
+        // scale than the (3Di + 12st) hit scores. For a profile query the 12-state profile is
+        // already loaded into ungappedAlignmentAux, so score it against its own center sequence.
+        if (querySeq12St != NULL) {
+            maxSelfScore += ungappedAlignmentAux->scoreSingleSequence(
+                    std::make_pair(querySeq12St->numSequence, (unsigned int)querySeq12St->L), 0, 0);
+        } else if (querySeq->numSequenceAux != NULL) {
+            const unsigned char *queryAux = querySeq->numSequenceAux;
+            maxSelfScore += ungappedAlignmentAux->scoreSingleSequence(std::make_pair(queryAux, querySeq->L), 0, 0);
+        }
     }
 
     maxSelfScore = (maxSelfScore-lowerBoundScore);

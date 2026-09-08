@@ -85,12 +85,32 @@ Prefiltering::Prefiltering(const std::string &queryDB,
     ungappedSubMatAux = NULL;
     const Sequence::SeqAuxInfo *auxInfoTarget = Sequence::getAuxInfo(targetSeqType);
     const Sequence::SeqAuxInfo *auxInfoQuery  = Sequence::getAuxInfo(querySeqType);
-    if (par.useAuxScoring && auxInfoTarget != NULL && auxInfoQuery != NULL && auxInfoTarget->auxMatData != NULL) {
+    // A profile query cannot carry the aux channel: getAuxInfo() keys off the packed _ss
+    // extended dbtype and a HMM_PROFILE db has none, so auxInfoQuery is NULL. In that case the
+    // 12-state information lives in a sibling _ss12 profile db (queryDB is "<x>_ss", so the
+    // sibling is "<x>_ss12" == queryDB + "12"). Detect it here so the aux matrix is still built;
+    // without this, ungappedAlignmentAux is never constructed and profile queries are prefiltered
+    // on 3Di alone while sequence queries get 3Di + 12-state.
+    q12StProfileDbr = NULL;
+    const bool queryIsProfile = Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE);
+    bool haveQuery12StProfile = false;
+    if (par.useAuxScoring && queryIsProfile && FileUtil::fileExists((queryDB + "12.dbtype").c_str())) {
+        haveQuery12StProfile = true;
+    }
+    if (par.useAuxScoring && auxInfoTarget != NULL && (auxInfoQuery != NULL || haveQuery12StProfile)
+        && auxInfoTarget->auxMatData != NULL) {
         std::string matName("aux.out");
         std::string matData(reinterpret_cast<const char*>(auxInfoTarget->auxMatData), auxInfoTarget->auxMatDataLen);
         char *serialized = BaseMatrix::serialize(matName, matData);
         ungappedSubMatAux = new SubstitutionMatrix(serialized, 2.0, -0.2f);
         free(serialized);
+        if (haveQuery12StProfile) {
+            q12StProfileDbr = new DBReader<unsigned int>((queryDB + "12").c_str(), (queryDB + "12.index").c_str(),
+                                                         par.threads, DBReader<unsigned int>::USE_INDEX|DBReader<unsigned int>::USE_DATA);
+            q12StProfileDbr->open(DBReader<unsigned int>::NOSORT);
+            Debug(Debug::INFO) << "Using 12-state query profile " << (queryDB + "12")
+                               << " for prefilter refinement\n";
+        }
     }
 
     if (Parameters::isEqualDbtype(FileUtil::parseDbType(targetDB.c_str()), Parameters::DBTYPE_INDEX_DB)) {
@@ -279,6 +299,11 @@ Prefiltering::~Prefiltering() {
 
     if (ungappedSubMatAux != NULL) {
         delete ungappedSubMatAux;
+    }
+    if (q12StProfileDbr != NULL) {
+        q12StProfileDbr->close();
+        delete q12StProfileDbr;
+        q12StProfileDbr = NULL;
     }
     if (kmerSubMat != ungappedSubMat) {
         delete ungappedSubMat;
@@ -810,6 +835,11 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
         thread_idx = static_cast<unsigned int>(omp_get_thread_num());
 #endif
         Sequence seq(qdbr->getMaxSeqLen(), querySeqType, kmerSubMat, kmerSize, spacedKmer, aaBiasCorrection, true, spacedKmerPattern);
+        // 12-state profile companion for profile queries; kmer params are irrelevant here,
+        // it is only used to build the aux ungapped-alignment profile.
+        Sequence seq12St(qdbr->getMaxSeqLen(), Parameters::DBTYPE_HMM_PROFILE,
+                         ungappedSubMatAux != NULL ? ungappedSubMatAux : kmerSubMat,
+                         0, false, false, false);
         QueryMatcher matcher(indexTable, sequenceLookup, kmerSubMat,  ungappedSubMat,
                              kmerThr, kmerSize, dbSize, std::max(tdbr->getMaxSeqLen(),qdbr->getMaxSeqLen()), maxResListLen, aaBiasCorrection, aaBiasCorrectionScale,
                              diagonalScoring, minDiagScoreThr, takeOnlyBestKmer, targetSeqType==Parameters::DBTYPE_NUCLEOTIDES,
@@ -838,6 +868,15 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
             char *seqData = qdbr->getData(id, thread_idx);
             unsigned int qKey = qdbr->getDbKey(id);
             seq.mapSequence(id, qKey, seqData, qdbr->getSeqLen(id));
+            Sequence *seq12StPtr = NULL;
+            if (q12StProfileDbr != NULL) {
+                size_t id12 = q12StProfileDbr->getId(qKey);
+                if (id12 != UINT_MAX) {
+                    seq12St.mapSequence(id12, qKey, q12StProfileDbr->getData(id12, thread_idx),
+                                        q12StProfileDbr->getSeqLen(id12));
+                    seq12StPtr = &seq12St;
+                }
+            }
             size_t targetSeqId = UINT_MAX;
             if (sameQTDB || includeIdentical) {
                 targetSeqId = tdbr->getId(seq.getDbKey());
@@ -856,7 +895,7 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
             if (taxonomyHook != NULL) {
                 taxonomyHook->setDbFrom(dbFrom);
             }
-            std::pair<hit_t *, size_t> prefResults = matcher.matchQuery(&seq, targetSeqId, targetSeqType == Parameters::DBTYPE_NUCLEOTIDES);
+            std::pair<hit_t *, size_t> prefResults = matcher.matchQuery(&seq, targetSeqId, targetSeqType == Parameters::DBTYPE_NUCLEOTIDES, seq12StPtr);
             size_t resultSize = prefResults.second;
             const float queryLength = static_cast<float>(qdbr->getSeqLen(id));
             for (size_t i = 0; i < resultSize; i++) {

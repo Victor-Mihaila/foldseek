@@ -75,6 +75,9 @@ private:
     BaseMatrix *kmerSubMat;
     BaseMatrix *ungappedSubMat;
     BaseMatrix *ungappedSubMatAux;
+    // sibling <queryDB>12 profile db, used to restore 12-state prefilter refinement
+    // for profile queries (see Prefiltering.cpp)
+    DBReader<unsigned int> *q12StProfileDbr;
     ScoreMatrix _2merSubMatrix;
     ScoreMatrix _3merSubMatrix;
     IndexTable *indexTable;

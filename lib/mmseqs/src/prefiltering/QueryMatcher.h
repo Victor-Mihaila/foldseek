@@ -63,7 +63,13 @@ public:
 
     // returns result for the sequence
     // identityId is the id of the identitical sequence in the target database if there is any, UINT_MAX otherwise
-    std::pair<hit_t*, size_t> matchQuery(Sequence *querySeq, unsigned int identityId, bool isNucleotide);
+    // querySeq12St: optional 12-state profile for the same query. Sequence queries carry the
+    // 12-state channel in querySeq->numSequenceAux, but a profile query cannot -- mapProfile
+    // never fills it and getAuxInfo() keys off the packed _ss extended dbtype, which a
+    // HMM_PROFILE db does not have. Passing the sibling _ss12 profile here restores the
+    // 12-state diagonal refinement for profile queries.
+    std::pair<hit_t*, size_t> matchQuery(Sequence *querySeq, unsigned int identityId, bool isNucleotide,
+                                        Sequence *querySeq12St = NULL);
 
     void setQueryMatcherHook(QueryMatcherHook* hook) {
         this->hook = hook;
@@ -238,7 +244,7 @@ protected:
                                 CounterResult *writePos, const unsigned int scoreThreshold,
                                 const CounterResult *results, const size_t resultSize);
 
-    std::pair<size_t, unsigned int> rescoreHits(Sequence * querySeq, unsigned int *scoreSizes, CounterResult *results,
+    std::pair<size_t, unsigned int> rescoreHits(Sequence * querySeq, Sequence * querySeq12St, unsigned int *scoreSizes, CounterResult *results,
                                                 size_t resultSize, UngappedAlignment *align, int lowerBoundScore);
 
 #define CacheFriendlyOperations(x)  CacheFriendlyOperations<x> * cachedOperation##x
