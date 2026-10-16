@@ -67,7 +67,7 @@ void StructureTo12St::findResiduePartners(std::vector<int> & partnerIdx, std::ve
 }
 
 // Describe interaction of residue i and j
-StructureTo12St::Feature StructureTo12St::calcFeatures(Vec3 * ca, int i, int j){
+StructureTo12St::Feature StructureTo12St::calcFeatures(Vec3 *, int i, int j){
     double features[Alphabet12St::FEATURE_CNT];
     features[0] = copysign(log(fabs(j - i) + 1), j - i );
     features[1] = partnerDistances[i];

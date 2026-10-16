@@ -802,7 +802,7 @@ public:
         unsigned int tComplexId;
         unsigned int qalnlen = 0;
         unsigned int talnlen = 0;
-        unsigned int adjustAlnLen;
+        unsigned int adjustAlnLen = 0;
         assignment.assignmentId = assignmentId;
         assignment.filterResult.clear();
         size_t alnChainNum = assignment.chainToChainResults.size();
