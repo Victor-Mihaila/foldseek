@@ -713,6 +713,9 @@ bool GemmiWrapper::loadFoldcompStructure(std::istream& stream, const std::string
     cb.clear();
     n.clear();
     ami.clear();
+    chainStartSerial.clear();
+    chainStartResId.clear();
+    chainDescriptions.clear();
     title.append(fc.strTitle);
     names.push_back(filename);
     const AtomCoordinate& first = coordinates[0];
@@ -761,6 +764,10 @@ bool GemmiWrapper::loadFoldcompStructure(std::istream& stream, const std::string
     c.push_back(c_atom);
     ca_bfactor.push_back(ca_atom_bfactor);
     chain.emplace_back(0, ca.size());
+    taxIds.push_back(0);
+    chainDescriptions.push_back("");
+    chainStartResId.push_back(first.residue_index);
+    chainStartSerial.push_back(first.atom_index);
     return true;
 }
 
