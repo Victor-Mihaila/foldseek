@@ -18,17 +18,17 @@ private:
     static constexpr double WINDOWED_EVALUE_CORR_SCALE = 0.13415799519899208;
     static constexpr double LEGACY_EVALUE_CORR_EXPONENT = 0.32;
     static constexpr double LEGACY_12ST_EVALUE_CORR_EXPONENT = 1.0;
-    static constexpr double LEGACY_12ST_EVALUE_CORR_SCALE = 1.0;
+    static constexpr double LEGACY_12ST_EVALUE_CORR_SCALE = 0.25;
     static constexpr double WINDOWED_PRED_SLOPE = 0.5142189860343933;
     static constexpr double WINDOWED_PRED_INTERCEPT = 35.95916748046875;
     static constexpr double WINDOWED_MIN_LAMBDA = 9.999999747378752e-05;
     static constexpr float WINDOWED_PROFILE_BIT_FACTOR = 8.0f;
     static constexpr int LEGACY_12ST_FEATURE_SIZE = 35;
     static constexpr float LEGACY_12ST_PROFILE_BIT_FACTOR = 8.0f;
-    static constexpr double LEGACY_12ST_LAMBDA_MEAN = 0.11640312522649765;
-    static constexpr double LEGACY_12ST_LAMBDA_STD = 0.06127968430519104;
-    static constexpr double LEGACY_12ST_MU_MEAN = 36.93449401855469;
-    static constexpr double LEGACY_12ST_MU_STD = 8.667202949523926;
+    static constexpr double LEGACY_12ST_LAMBDA_MEAN = 0.05809067;
+    static constexpr double LEGACY_12ST_LAMBDA_STD = 0.03113629892;
+    static constexpr double LEGACY_12ST_MU_MEAN = 7.340611654;
+    static constexpr double LEGACY_12ST_MU_STD = 7.853373165;
     BaseMatrix *subMat;
     double logDbResidueCount;
     double logDbSequenceCount;
@@ -88,7 +88,7 @@ public:
                                               double score);
     bool usesWindowedModel() const { return mode == LocalParameters::EVALUE_NN_MODE_WINDOW; }
     bool usesLegacy12StModel() const { return mode == LocalParameters::EVALUE_NN_MODE_LEGACY_12ST; }
-    double activeLogDbCount() const { return usesWindowedModel() ? logDbSequenceCount : logDbResidueCount; }
+    double activeLogDbCount() const { return (usesWindowedModel() || usesLegacy12StModel()) ? logDbSequenceCount : logDbResidueCount; }
 
     double computePvalue(double score, double lambda_, double mu) {
         double h = lambda_ * (score - mu);
