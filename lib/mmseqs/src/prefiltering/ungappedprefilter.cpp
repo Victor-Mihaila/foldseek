@@ -1,3 +1,4 @@
+#include <cstdlib>
 //
 // Created by Martin Steinegger on 17.09.18.
 //
@@ -84,6 +85,10 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
     std::vector<hit_t> shortResults;
     std::vector<Matcher::result_t> resultsAln;
     Masker *queryMasker = have12StQuery ? new Masker(*subMat) : NULL;
+    const char *noProfileMaskEnv = std::getenv("FOLDSEEK_NO_PROFILE_MASK");
+    const bool maskProfileQueries = isProfileQuery && packedTarget && par.maskNrepeats > 0
+        && !(noProfileMaskEnv != NULL && noProfileMaskEnv[0] != '\0' && noProfileMaskEnv[0] != '0');
+    Masker *profileMasker = maskProfileQueries ? new Masker(*subMat) : NULL;
     const unsigned char x12St = have12StQuery ? subMat12St->aa2num[static_cast<int>('X')] : 0;
     const unsigned char x3Di = subMat->aa2num[static_cast<int>('X')];
     const int MARV_MAX_MASK_THRESHOLD = 511;
@@ -229,6 +234,18 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
             batchProfileBuf[slot].assign(qSeq.profile_for_alignment,
                                          qSeq.profile_for_alignment + (size_t)subMat->alphabetSize * (size_t)qSeq.L);
             profile = batchProfileBuf[slot].data();
+            if (profileMasker != NULL) {
+                profileMasker->maskSequence(qSeq,  false, par.maskProb,
+                                             false, par.maskNrepeats);
+                const unsigned char xNum = (unsigned char) profileMasker->maskLetterNum;
+                for (int i = 0; i < qSeq.L; ++i) {
+                    if (qSeq.numSequence[i] == xNum) {
+                        for (size_t j = 0; j < (size_t)subMat->alphabetSize; ++j) {
+                            profile[j * qSeq.L + i] = 0;
+                        }
+                    }
+                }
+            }
         } else {
             if (have12StQuery) {
                 queryMasker->maskSequence(qSeq,  false, par.maskProb,
@@ -436,6 +453,9 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
 
     if (compositionBias != NULL) {
         free(compositionBias);
+    }
+    if (profileMasker != NULL) {
+        delete profileMasker;
     }
     if (queryMasker != NULL) {
         delete queryMasker;

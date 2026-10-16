@@ -390,6 +390,11 @@ int structureungappedalign(int argc, const char **argv, const Command& command) 
                 }
                 qSeq3Di.mapSequence(id, queryKey, querySeq3Di21, querySeqLen);
                 qSeqAA.mapSequence(id, queryKey, querySeqAA, querySeqLen);
+                if (!query3Di12St && use12StScoring
+                    && Parameters::isEqualDbtype(qdbr3Di.getDbtype(), Parameters::DBTYPE_HMM_PROFILE)
+                    && Parameters::isEqualDbtype(qSeq12St->getSeqType(), Parameters::DBTYPE_HMM_PROFILE)) {
+                    StructureUtil::mask12StProfile(qSeq3Di, *qSeq12St);
+                }
                 if(needLDDT || needTMaligner){
                     size_t qId = qcadbr->sequenceReader->getId(queryKey);
                     char *qcadata = qcadbr->sequenceReader->getData(qId, thread_idx);
@@ -525,5 +530,6 @@ int structureungappedalign(int argc, const char **argv, const Command& command) 
         delete q12StDbr;
     }
     delete subMat12St;
+    StructureUtil::reportProfileMasking("structureungappedalign");
     return EXIT_SUCCESS;
 }

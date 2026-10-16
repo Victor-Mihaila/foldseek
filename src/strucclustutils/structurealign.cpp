@@ -501,9 +501,17 @@ int structurealign(int argc, const char **argv, const Command& command) {
                     unsigned int query12StId = q12StDbr->sequenceReader->getId(queryKey);
                     char *querySeq12St = q12StDbr->sequenceReader->getData(query12StId, thread_idx);
                     qSeq12St->mapSequence(id, queryKey, querySeq12St, querySeqLen);
+                    if (use12StEvalue && qSeq12StUnmasked && query12StProfileLayout) {
+                        qSeq12StUnmasked->mapSequence(id, queryKey, querySeq12St, querySeqLen);
+                        qSeq12StForEvalue = qSeq12StUnmasked.get();
+                    }
                 }
                 qSeq3Di.mapSequence(id, queryKey, querySeq3Di21, querySeqLen);
                 qSeqAA.mapSequence(id, queryKey, querySeqAA, querySeqLen);
+                if (!query3Di12St && use12StScoring && query12StProfileLayout
+                    && Parameters::isEqualDbtype(q3DiDbr->getDbtype(), Parameters::DBTYPE_HMM_PROFILE)) {
+                    StructureUtil::mask12StProfile(qSeq3Di, *qSeq12St);
+                }
                 if(needCalpha){
                     size_t qId = qcadbr->sequenceReader->getId(queryKey);
                     char *qcadata = qcadbr->sequenceReader->getData(qId, thread_idx);
@@ -713,5 +721,6 @@ int structurealign(int argc, const char **argv, const Command& command) {
         delete q12StDbr;
     }
 
+    StructureUtil::reportProfileMasking("structurealign");
     return EXIT_SUCCESS;
 }
