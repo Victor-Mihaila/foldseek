@@ -558,7 +558,7 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
             }
         }
 
-        LlamaInitGuard guard(par.verbosity > 3);
+        ProstT5InitGuard guard(par.verbosity > 3);
         std::vector<std::string> devices = ProstT5::getDevices();
         for (std::vector<std::string>::iterator it = devices.begin(); it != devices.end(); ++it) {
             Debug(Debug::INFO) << *it << "\n";

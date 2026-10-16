@@ -1,0 +1,5 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+Name: ggml
+Description: ggml
+Version: 0
+Libs: -lggml
