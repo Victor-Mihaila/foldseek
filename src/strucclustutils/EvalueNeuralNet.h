@@ -17,7 +17,7 @@ private:
     static constexpr double WINDOWED_EVALUE_CORR_EXPONENT = 0.8559494682342873;
     static constexpr double WINDOWED_EVALUE_CORR_SCALE = 0.13415799519899208;
     static constexpr double LEGACY_EVALUE_CORR_EXPONENT = 0.32;
-    static constexpr double LEGACY_12ST_EVALUE_CORR_EXPONENT = 0.32;
+    static constexpr double LEGACY_12ST_EVALUE_CORR_EXPONENT = 1.0;
     static constexpr double LEGACY_12ST_EVALUE_CORR_SCALE = 1.0;
     static constexpr double WINDOWED_PRED_SLOPE = 0.5142189860343933;
     static constexpr double WINDOWED_PRED_INTERCEPT = 35.95916748046875;

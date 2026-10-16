@@ -414,6 +414,7 @@ int structurealign(int argc, const char **argv, const Command& command) {
         Sequence tSeqAA(par.maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, (const BaseMatrix *) &subMatAA, 0, false, par.compBiasCorrection);
         Sequence tSeq3Di(par.maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, (const BaseMatrix *) &subMat3Di, 0, false, par.compBiasCorrection);
         std::unique_ptr<Sequence> qSeq12St;
+        std::unique_ptr<Sequence> qSeq12StUnmasked;
         std::unique_ptr<Sequence> tSeq12St;
         const bool query12StProfileLayout = (use12StScoring || use12StEvalue)
             && q12StDbr != NULL
@@ -435,17 +436,20 @@ int structurealign(int argc, const char **argv, const Command& command) {
         }
         std::vector<char> qSeq3Di21Buf;
         std::vector<char> qSeq12StBuf;
+        std::vector<char> qSeq12StUnmaskedBuf;
         std::vector<char> tSeq3Di21Buf;
         std::vector<char> tSeq12StBuf;
         if (queryHas12St) {
             qSeq3Di21Buf.reserve(par.maxSeqLen);
             qSeq12StBuf.reserve(par.maxSeqLen);
+            qSeq12StUnmaskedBuf.reserve(par.maxSeqLen);
             if (use12StScoring || use12StEvalue) {
                 int q12StDbtype = query3Di12St ? Parameters::DBTYPE_AMINO_ACIDS : q12StDbr->getDbtype();
                 const BaseMatrix *q12StMat = (q12StDbtype == Parameters::DBTYPE_HMM_PROFILE)
                     ? static_cast<const BaseMatrix *>(&subMatAA)
                     : static_cast<const BaseMatrix *>(subMat12St);
                 qSeq12St.reset(new Sequence(par.maxSeqLen, q12StDbtype, q12StMat, 0, false, par.compBiasCorrection));
+                qSeq12StUnmasked.reset(new Sequence(par.maxSeqLen, q12StDbtype, q12StMat, 0, false, par.compBiasCorrection));
             }
         }
         if (target3Di12St) {
@@ -481,7 +485,13 @@ int structurealign(int argc, const char **argv, const Command& command) {
                 char *querySeq3Di = q3DiDbr->sequenceReader->getData(queryId, thread_idx);
                 unsigned int querySeqLen = q3DiDbr->sequenceReader->getSeqLen(queryId);
                 const char *querySeq3Di21 = querySeq3Di;
+                Sequence *qSeq12StForEvalue = qSeq12St.get();
                 if (query3Di12St) {
+                    if (use12StEvalue && qSeq12StUnmasked) {
+                        StructureUtil::split3Di12St(querySeq3Di, querySeqLen, qSeq3Di21Buf, qSeq12StUnmaskedBuf, subMat3Di, *subMat12St, false);
+                        qSeq12StUnmasked->mapSequence(id, queryKey, qSeq12StUnmaskedBuf.data(), querySeqLen);
+                        qSeq12StForEvalue = qSeq12StUnmasked.get();
+                    }
                     StructureUtil::split3Di12St(querySeq3Di, querySeqLen, qSeq3Di21Buf, qSeq12StBuf, subMat3Di, *subMat12St, true);
                     querySeq3Di21 = qSeq3Di21Buf.data();
                     if (use12StScoring || use12StEvalue) {
@@ -509,7 +519,7 @@ int structurealign(int argc, const char **argv, const Command& command) {
                 std::pair<double, double> muLambda = std::make_pair(0.0, 0.0);
                 if (!evaluer.usesWindowedModel()) {
                     muLambda = evaluer.usesLegacy12StModel()
-                        ? evaluer.predictMuLambda(qSeq3Di, *qSeq12St)
+                        ? evaluer.predictMuLambda(qSeq3Di, *qSeq12StForEvalue)
                         : evaluer.predictMuLambda(qSeq3Di);
                 }
                 if (use12StScoring && structureSmithWaterman.isProfileSearch() == false &&
