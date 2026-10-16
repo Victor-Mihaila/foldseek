@@ -102,11 +102,6 @@ int alignStructure(StructureSmithWaterman & structureSmithWaterman,
 
     const int32_t rawSmithWatermanScore = static_cast<int32_t>(align.score1);
     int32_t score;
-    // Profile queries used to skip the reverse-score null correction. Sequence::reverse()
-    // handles DBTYPE_HMM_PROFILE (profile_score, profile_index, profile_for_alignment,
-    // numSequence) and ssw_init() memcpy's the alignment profiles, so the forward object
-    // is unaffected by reversing the query afterwards. Without the correction a profile
-    // query's null distribution is ~4x hotter than a sequence query's.
     const bool useReverseScoreForThisQuery = useReverseScore;
     if (useReverseScoreForThisQuery) {
         StructureSmithWaterman::s_align revAlign;
@@ -425,8 +420,6 @@ int structurealign(int argc, const char **argv, const Command& command) {
             && Parameters::isEqualDbtype(q12StDbr->getDbtype(), Parameters::DBTYPE_HMM_PROFILE);
         int8_t *tinySubMat12St = NULL;
         if (subMat12St) {
-            // Sequence profiles are stored in MMseqs' fixed 20-column AA layout,
-            // so profile-query 12-state scoring must use AA-slot indices as well.
             int stride = subMatAA.alphabetSize;
             tinySubMat12St = (int8_t*) mem_align(ALIGN_INT, stride * stride * sizeof(int8_t));
             memset(tinySubMat12St, 0, stride * stride * sizeof(int8_t));

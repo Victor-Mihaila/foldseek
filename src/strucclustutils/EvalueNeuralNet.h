@@ -17,10 +17,6 @@ private:
     static constexpr double WINDOWED_EVALUE_CORR_EXPONENT = 0.8559494682342873;
     static constexpr double WINDOWED_EVALUE_CORR_SCALE = 0.13415799519899208;
     static constexpr double LEGACY_EVALUE_CORR_EXPONENT = 0.32;
-    // Power-only ("slope-only") calibration of the 3-channel (AA+3Di+12st) raw e-values on
-    // the SCOP fold-level FP curve, matching the legacy (non-12st) convention E_corr = E_raw^b
-    // with no multiplier (scale = 1). Exponent is the log-log slope through the origin, fit
-    // over reported E_raw > 1e-4 (below that the null has essentially no observed FPs).
     static constexpr double LEGACY_12ST_EVALUE_CORR_EXPONENT = 0.32;
     static constexpr double LEGACY_12ST_EVALUE_CORR_SCALE = 1.0;
     static constexpr double WINDOWED_PRED_SLOPE = 0.5142189860343933;
@@ -28,13 +24,7 @@ private:
     static constexpr double WINDOWED_MIN_LAMBDA = 9.999999747378752e-05;
     static constexpr float WINDOWED_PROFILE_BIT_FACTOR = 8.0f;
     static constexpr int LEGACY_12ST_FEATURE_SIZE = 35;
-    // Bit scaling used to invert profile scores back to probabilities when a mode-2 query is a
-    // profile (same scale the windowed model uses for result2profile PSSMs).
     static constexpr float LEGACY_12ST_PROFILE_BIT_FACTOR = 8.0f;
-    // Normalization stats for the 3-channel (AA+3Di+12st) training labels
-    // (proteomes_mulambda_rev0_100k_with12st.csv). These MUST match the mean/std
-    // that normalize_y() printed for the exact model embedded in evalue_12st_nn.kerasify;
-    // they un-normalize the network's output at predictMuLambdaLegacy12St().
     static constexpr double LEGACY_12ST_LAMBDA_MEAN = 0.11640312522649765;
     static constexpr double LEGACY_12ST_LAMBDA_STD = 0.06127968430519104;
     static constexpr double LEGACY_12ST_MU_MEAN = 36.93449401855469;
@@ -43,8 +33,6 @@ private:
     double logDbResidueCount;
     double logDbSequenceCount;
     int mode;
-    // When true, a profile query's composition for the mode-2 features is recovered from the
-    // profile scores; when false (default) the profile's center/query sequence is counted.
     bool recoverProfileComposition;
     KerasModel encoder;
     Tensor in;

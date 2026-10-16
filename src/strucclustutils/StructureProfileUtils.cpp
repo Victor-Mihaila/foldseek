@@ -140,7 +140,7 @@ void split3Di12StDb(const std::string &inputDb,
     reader.close();
 }
 
-} // namespace
+}
 
 ResolvedStructureProfileDbs resolveStructureProfileDbs(LocalParameters &par,
                                                        const std::string &db2NoIndexName,
@@ -176,11 +176,6 @@ ResolvedStructureProfileDbs resolveStructureProfileDbs(LocalParameters &par,
         }
     }
 
-    // A profile query (e.g. iterations >= 2 of an iterative 12-state search) has an HMM-profile
-    // _ss DB that cannot be split. If the previous iteration left a companion _ss12 profile next
-    // to it, reuse it directly so the 12-state channel is carried forward instead of being
-    // dropped -- otherwise the next --evalue-nn-mode 2 alignment aborts with
-    // "requires a query 12-state alphabet in the packed _ss DB or a _ss12 DB".
     if (packedInput3Di12St == false
         && resolved.ss12InputDb.empty()
         && FileUtil::fileExists((par.db1 + "_ss12.dbtype").c_str())) {

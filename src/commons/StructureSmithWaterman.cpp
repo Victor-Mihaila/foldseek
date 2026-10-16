@@ -1843,10 +1843,6 @@ void StructureSmithWaterman::ssw_init(Sequence* q_aa,
             profile->composition_bias_ss[i] = (int8_t) (tmp_composition_bias[i] < 0.0) ? tmp_composition_bias[i] - 0.5 : tmp_composition_bias[i] + 0.5;
             compositionBias = (compositionBias < profile->composition_bias_ss[i]) ? compositionBias : profile->composition_bias_ss[i];
         }
-        // 12-state channel: correct against the 12-state substitution matrix and its background.
-        // The 12st query sequence and m12st share the same (native) alphabet index space, so the
-        // per-position bias is self-consistent regardless of any letter remapping applied to the
-        // SIMD substitution profile downstream.
         if (profile->has12St && m12st != NULL) {
             SubstitutionMatrix::calcLocalAaBiasCorrection(m12st, q_12st->numSequence, q_12st->L, tmp_composition_bias, aaBiasCorrectionScale);
             for (int i = 0; i < q_12st->L; i++) {

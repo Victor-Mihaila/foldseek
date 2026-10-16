@@ -738,12 +738,9 @@ int samplemulambda(int argc, const char **argv, const Command& command) {
             tinySubMatAA[i * subMatAA.alphabetSize + j] = subMatAA.subMatrix[i][j];
         }
     }
-    // Score the 12-state channel exactly as the search path does, so the sampled
-    // mu/lambda match the scoring used at query time (3Di + AA + 12st).
     const bool use12StScoring = par.useAuxScoring && query3Di12St && target3Di12St;
     int8_t * tinySubMat12St = NULL;
     if (use12StScoring) {
-        // SSW uses subMat3Di.alphabetSize as stride for all matrices including 12st
         int stride = subMat3Di.alphabetSize;
         tinySubMat12St = (int8_t*) mem_align(ALIGN_INT, stride * stride * sizeof(int8_t));
         memset(tinySubMat12St, 0, stride * stride * sizeof(int8_t));
@@ -855,8 +852,6 @@ int samplemulambda(int argc, const char **argv, const Command& command) {
                 for (int i = 0; i < targetLen; i++) {
                     std::swap(tSeq3Di.numSequence[i], tSeq3Di.numSequence[indices[i]]);
                     std::swap(tSeqAA.numSequence[i], tSeqAA.numSequence[indices[i]]);
-                    // apply the identical permutation to the 12st channel so all three
-                    // channels stay aligned per residue in the shuffled null target
                     if (use12StScoring) {
                         std::swap(tSeq12St->numSequence[i], tSeq12St->numSequence[indices[i]]);
                     }

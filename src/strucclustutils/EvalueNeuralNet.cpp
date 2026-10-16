@@ -117,12 +117,6 @@ void EvalueNeuralNet::fillLegacy12StComposition(float *dst, const Sequence &seq,
     if (seq.L <= 0) {
         return;
     }
-    // Profile query (e.g. iterations >= 2 of an iterative search): recover an expected
-    // composition from the profile scores instead of counting the single center/query
-    // sequence, mirroring the windowed model. Each column's profile scores are converted
-    // back to probabilities, normalized to a per-position distribution, and averaged over
-    // the profile. seq.subMat is used per channel (3Di or 12-state) so the background and
-    // letter->state mapping match the sequence-path counting done below.
     if (recoverProfileComposition
         && Parameters::isEqualDbtype(seq.getSequenceType(), Parameters::DBTYPE_HMM_PROFILE)) {
         const short *profileScores = seq.profile_score;
@@ -134,8 +128,6 @@ void EvalueNeuralNet::fillLegacy12StComposition(float *dst, const Sequence &seq,
             for (int aa = 0; aa < alphabetSize; ++aa) {
                 const unsigned char state = seq.subMat->aa2num[static_cast<unsigned char>(alphabet[aa])];
                 float prob = 0.0f;
-                // Only the PROFILE_AA_SIZE score columns are stored; states outside that range
-                // (e.g. the neutral 'X') have no profile column and contribute nothing.
                 if (state < static_cast<unsigned char>(Sequence::PROFILE_AA_SIZE)) {
                     prob = Sequence::scoreToProba(row[state], seq.subMat->pBack[state],
                                                   LEGACY_12ST_PROFILE_BIT_FACTOR, seq.subMat->scoreBias);
