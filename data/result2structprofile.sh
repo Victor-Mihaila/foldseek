@@ -12,6 +12,14 @@ fail() {
     exit 1
 }
 
+if [ -n "${LOWCONF_PAR}" ]; then
+    # shellcheck disable=SC2086
+    "$MMSEQS" lowconfmembers "${LOWCONF_TARGET_DB}" "${RESULT}" "${OUT}_lcaln" ${LOWCONF_PAR} \
+        || die "lowconfmembers died"
+    RESULT="${OUT}_lcaln"
+    REMOVE_LCALN=1
+fi
+
 if [ -e "${INPUT}.dbtype" ]; then
     # shellcheck disable=SC2086
     $RUNNER "$MMSEQS" base:result2profile "${INPUT}" "${TARGET}${INDEXEXT}" "${RESULT}" "${OUT}" ${PROFILE_PAR} \
@@ -75,6 +83,18 @@ if [ -n "${CREATE_SS12_PROFILE}" ]; then
     fi
 fi
 
+if [ -n "${LOWCONFQ}" ]; then
+    lcq() {
+        # shellcheck disable=SC2086,SC2153
+        "$MMSEQS" lowconfquery "${INPUT}" "$1" "$1_lcq" ${LOWCONFQ_PAR} || die "lowconfquery died"
+        mv -f -- "$1_lcq" "$1" || die "lowconfquery: could not replace $1"
+        mv -f -- "$1_lcq.index" "$1.index" || die "lowconfquery: could not replace $1.index"
+        rm -f -- "$1_lcq.dbtype"
+    }
+    if [ -e "${OUT}_ss.dbtype" ]; then lcq "${OUT}_ss"; fi
+    if [ -e "${OUT}_ss12.dbtype" ]; then lcq "${OUT}_ss12"; fi
+fi
+
 if [ -e "${INPUT}_ca.dbtype" ]; then
     # shellcheck disable=SC2086
     "$MMSEQS" lndb "${INPUT}_ca" "${OUT}_ca" ${VERBOSITY} \
@@ -89,6 +109,11 @@ fi
 
 if [ -e "${INPUT}.sh" ]; then
     rm -f -- "${OUT}.sh"
+fi
+
+if [ -n "${REMOVE_LCALN}" ]; then
+    # shellcheck disable=SC2086
+    "$MMSEQS" rmdb "${OUT}_lcaln" ${VERBOSITY} || true
 fi
 
 if [ -n "${REMOVE_SPLIT_TMP}" ]; then

@@ -8,6 +8,8 @@
 namespace Alphabet12St{
     static const size_t STATE_CNT = 12;
     static const char INVALID_STATE = 6; // H
+    static const unsigned char PACKED_X = 252;
+    static const unsigned char X_NUM = 20;
     const double DISTANCE_ALPHA_BETA = 1.5336;
     const double PI = 3.14159265359;
     static const size_t FEATURE_CNT = 2;

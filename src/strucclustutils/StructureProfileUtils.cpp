@@ -80,7 +80,14 @@ std::string createProfileParameters(LocalParameters &par,
         par.gapExtend = *gapExtendOverride;
     }
 
-    const std::string profilePar = par.createParameterString(par.result2structprofile);
+    std::vector<MMseqsParameter *> profileParams;
+    for (MMseqsParameter *p : par.result2structprofile) {
+        if (p->uniqid != par.PARAM_PROFILE_LOWCONF_MEMBERS.uniqid && p->uniqid != par.PARAM_LOWCONF_MEMBER_MAX.uniqid
+            && p->uniqid != par.PARAM_PROFILE_LOWCONF_QUERY.uniqid) {
+            profileParams.push_back(p);
+        }
+    }
+    const std::string profilePar = par.createParameterString(profileParams);
 
     par.scoringMatrixFile = savedScoringMatrixFile;
     par.seedScoringMatrixFile = savedSeedScoringMatrixFile;

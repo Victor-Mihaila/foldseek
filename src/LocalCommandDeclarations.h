@@ -42,4 +42,6 @@ extern int filterdimerdb(int argc, const char **argv, const Command& command);
 extern int lolalign(int argc, const char **argv, const Command& command);
 extern int add12st(int argc, const char **argv, const Command& command);
 extern int structtyview(int argc, const char **argv, const Command& command);
+extern int lowconfmembers(int argc, const char **argv, const Command& command);
+extern int lowconfquery(int argc, const char **argv, const Command& command);
 #endif

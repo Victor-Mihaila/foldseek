@@ -171,6 +171,8 @@ public:
     std::vector<MMseqsParameter *> easyinterfacesearchworkflow;
     std::vector<MMseqsParameter *> structtyworkflow;
     std::vector<MMseqsParameter *> add12st;
+    std::vector<MMseqsParameter *> lowconfmembers;
+    std::vector<MMseqsParameter *> lowconfquery;
 
     PARAMETER(PARAM_TMSCORE_THRESHOLD)
     PARAMETER(PARAM_TMSCORE_THRESHOLD_MODE)
@@ -178,6 +180,9 @@ public:
     PARAMETER(PARAM_LDDT_THRESHOLD)
     PARAMETER(PARAM_SORT_BY_STRUCTURE_BITS)
     PARAMETER(PARAM_MASK_BFACTOR_THRESHOLD)
+    PARAMETER(PARAM_PROFILE_LOWCONF_MEMBERS)
+    PARAMETER(PARAM_LOWCONF_MEMBER_MAX)
+    PARAMETER(PARAM_PROFILE_LOWCONF_QUERY)
     PARAMETER(PARAM_ALIGNMENT_TYPE)
     PARAMETER(PARAM_CHAIN_NAME_MODE)
     PARAMETER(PARAM_MODEL_NAME_MODE)
@@ -227,6 +232,9 @@ public:
     float lddtThr;
     int sortByStructureBits;
     float maskBfactorThreshold;
+    int profileLowconfMembers;
+    float lowconfMemberMax;
+    int profileLowconfQuery;
     int alignmentType;
     int chainNameMode;
     int modelNameMode;

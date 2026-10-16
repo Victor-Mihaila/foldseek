@@ -90,6 +90,11 @@ public:
         }
         for (size_t i = 0; i < len; ++i) {
             unsigned char val = static_cast<unsigned char>(src[i]);
+            if (val == Alphabet12St::PACKED_X) {
+                seq3di[i] = 'X';
+                seq12st[i] = 'X';
+                continue;
+            }
             unsigned char state3di = static_cast<unsigned char>(val / Alphabet12St::STATE_CNT);
             unsigned char state12st = static_cast<unsigned char>(val % Alphabet12St::STATE_CNT);
             seq3di[i] = subMat3Di.num2aa[state3di];

@@ -22,6 +22,8 @@ void updateValdiation() {
         remap3Di[i]  = static_cast<unsigned char>(i / Alphabet12St::STATE_CNT);
         remapAux[i] = static_cast<unsigned char>(i % Alphabet12St::STATE_CNT);
     }
+    remap3Di[Alphabet12St::PACKED_X] = Alphabet12St::X_NUM;
+    remapAux[Alphabet12St::PACKED_X] = Alphabet12St::X_NUM;
     // Find the embedded 12st matrix data (already registered by LocalParameters)
     const unsigned char *auxMatData = NULL;
     unsigned int auxMatDataLen = 0;
@@ -325,6 +327,22 @@ std::vector<Command> foldseekCommands = {
                 "<i:sequenceDB> <tmpDir>",
                 CITATION_SERVER | CITATION_FOLDSEEK,{{"sequenceDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA|DbType::NEED_HEADER, &DbValidator::sequenceDb },
                                            {"tmpDir", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::directory }}},
+        {"lowconfquery",         lowconfquery,   &localPar.lowconfquery,       COMMAND_HIDDEN,
+                "Mask profile columns or packed 3Di+12-state residues at low-pLDDT (lowercase) query residues",
+                NULL,
+                "",
+                "<i:queryDB> <i:profileDB|3Di12stDB> <o:profileDB|3Di12stDB>",
+                CITATION_FOLDSEEK, {{"queryDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::sequenceDb },
+                                    {"profileDB|3Di12stDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::allDb },
+                                    {"profileDB|3Di12stDB", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::allDb }}},
+        {"lowconfmembers",       lowconfmembers, &localPar.lowconfmembers,     COMMAND_HIDDEN,
+                "Gap low-pLDDT (lowercase) target residues in an alignment DB before result2profile",
+                NULL,
+                "",
+                "<i:targetDB> <i:alignmentDB> <o:alignmentDB>",
+                CITATION_FOLDSEEK, {{"targetDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::sequenceDb },
+                                    {"alignmentDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::alignmentDb },
+                                    {"alignmentDB", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::alignmentDb }}},
         {"add12st",              add12st,       &localPar.add12st,             COMMAND_DATABASE_CREATION,
                 "Update database to the current Foldseek format",
                 "Moves db_ss to db_ss_old and creates a new db_ss with combined 3Di and 12-state alphabet.\n"

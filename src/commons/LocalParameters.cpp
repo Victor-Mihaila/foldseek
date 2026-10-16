@@ -15,6 +15,9 @@ LocalParameters::LocalParameters() :
         PARAM_LDDT_THRESHOLD(PARAM_LDDT_THRESHOLD_ID,"--lddt-threshold", "LDDT threshold", "accept alignments with a lddt > thr [0.0,1.0]",typeid(float), (void *) &lddtThr, "^0(\\.[0-9]+)?|1(\\.0+)?$"),
         PARAM_SORT_BY_STRUCTURE_BITS(PARAM_SORT_BY_STRUCTURE_BITS_ID,"--sort-by-structure-bits", "Sort by structure bit score", "sort by bits*sqrt(alnlddt*alntmscore)",typeid(int), (void *) &sortByStructureBits, "^[0-1]{1}$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
         PARAM_MASK_BFACTOR_THRESHOLD(PARAM_MASK_BFACTOR_THRESHOLD_ID,"--mask-bfactor-threshold", "Mask b-factor threshold", "mask residues for seeding if b-factor < thr [0,100]",typeid(float), (void *) &maskBfactorThreshold, "^[0-9]*(\\.[0-9]+)?$"),
+        PARAM_PROFILE_LOWCONF_MEMBERS(PARAM_PROFILE_LOWCONF_MEMBERS_ID,"--profile-lowconf-members", "Gap low-confidence member residues", "result2profile: member residues that are lowercase in the TARGET amino-acid db (pLDDT below --mask-bfactor-threshold at createdb) do not contribute to the profile\n0: off\n1: on", typeid(int), (void *) &profileLowconfMembers, "^[0-1]{1}$", MMseqsParameter::COMMAND_PROFILE),
+        PARAM_LOWCONF_MEMBER_MAX(PARAM_LOWCONF_MEMBER_MAX_ID,"--lowconf-member-max", "Max low-confidence fraction of a member", "with --profile-lowconf-members 1: drop a member whose aligned residues are more than this fraction low-confidence [0.0,1.0]", typeid(float), (void *) &lowconfMemberMax, "^0(\\.[0-9]+)?|1(\\.0+)?$", MMseqsParameter::COMMAND_PROFILE | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_PROFILE_LOWCONF_QUERY(PARAM_PROFILE_LOWCONF_QUERY_ID,"--profile-lowconf-query", "Zero low-confidence query columns", "result2profile: zero the 3Di and 12-state profile columns at query residues that are lowercase in the QUERY amino-acid db (pLDDT below --mask-bfactor-threshold at createdb)\n0: off\n1: on", typeid(int), (void *) &profileLowconfQuery, "^[0-1]{1}$", MMseqsParameter::COMMAND_PROFILE),
         PARAM_ALIGNMENT_TYPE(PARAM_ALIGNMENT_TYPE_ID,"--alignment-type", "Alignment type", "How to compute the alignment:\n0: 3di alignment\n1: TM alignment\n2: 3Di+AA\n3: LoL alignmnet",typeid(int), (void *) &alignmentType, "^[0-3]{1}$"),
         PARAM_CHAIN_NAME_MODE(PARAM_CHAIN_NAME_MODE_ID,"--chain-name-mode", "Chain name mode", "Add chain to name:\n0: auto\n1: always add\n",typeid(int), (void *) &chainNameMode, "^[0-1]{1}$", MMseqsParameter::COMMAND_EXPERT),
         PARAM_MODEL_NAME_MODE(PARAM_MODEL_NAME_MODE_ID,"--model-name-mode", "Model name mode", "Add model to name:\n0: auto\n1: always add\n",typeid(int), (void *) &modelNameMode, "^[0-1]{1}$", MMseqsParameter::COMMAND_EXPERT),
@@ -268,6 +271,18 @@ LocalParameters::LocalParameters() :
     result2structprofile.push_back(&PARAM_COMPRESSED);
     result2structprofile.push_back(&PARAM_V);
     result2structprofile.push_back(&PARAM_PROFILE_OUTPUT_MODE);
+    result2structprofile.push_back(&PARAM_PROFILE_LOWCONF_MEMBERS);
+    result2structprofile.push_back(&PARAM_LOWCONF_MEMBER_MAX);
+    result2structprofile.push_back(&PARAM_PROFILE_LOWCONF_QUERY);
+
+    lowconfquery.push_back(&PARAM_THREADS);
+    lowconfquery.push_back(&PARAM_COMPRESSED);
+    lowconfquery.push_back(&PARAM_V);
+
+    lowconfmembers.push_back(&PARAM_LOWCONF_MEMBER_MAX);
+    lowconfmembers.push_back(&PARAM_THREADS);
+    lowconfmembers.push_back(&PARAM_COMPRESSED);
+    lowconfmembers.push_back(&PARAM_V);
 
     // add12st
     add12st.push_back(&PARAM_THREADS);
@@ -417,6 +432,9 @@ LocalParameters::LocalParameters() :
 
     // createdb
     maskBfactorThreshold = 0;
+    profileLowconfMembers = 0;
+    lowconfMemberMax = 0.5;
+    profileLowconfQuery = 0;
     chainNameMode = 0;
     modelNameMode = 0;
     writeMapping = 0;
