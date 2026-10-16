@@ -75,6 +75,7 @@ private:
     BaseMatrix *kmerSubMat;
     BaseMatrix *ungappedSubMat;
     BaseMatrix *ungappedSubMatAux;
+    DBReader<unsigned int> *q12StProfileDbr;
     ScoreMatrix _2merSubMatrix;
     ScoreMatrix _3merSubMatrix;
     IndexTable *indexTable;
