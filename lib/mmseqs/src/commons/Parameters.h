@@ -415,6 +415,7 @@ public:
     int    gpu;                          // use GPU
     int    gpuServer;                    // use the gpu server
     int    gpuServerWaitTimeout;         // wait for this many seconds until GPU server is ready
+    int    gpuRescoreTopkMult;
     int    threads;                      // Amounts of threads
     int    compressed;                   // compressed writer
     bool   removeTmpFiles;               // Do not delete temp files
@@ -890,6 +891,7 @@ public:
     PARAMETER(PARAM_GPU)
     PARAMETER(PARAM_GPU_SERVER)
     PARAMETER(PARAM_GPU_SERVER_WAIT_TIMEOUT)
+    PARAMETER(PARAM_GPU_RESCORE_TOPK_MULT)
     // format alignment
     PARAMETER(PARAM_FORMAT_MODE)
     PARAMETER(PARAM_FORMAT_OUTPUT)

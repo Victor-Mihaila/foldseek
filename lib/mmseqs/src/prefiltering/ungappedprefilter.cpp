@@ -39,7 +39,7 @@ void intHandlerClient(int) {
     keepRunningClient = 0;
 }
 
-void runFilterOnGpu(Parameters & par, BaseMatrix * subMat,
+void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12St,
                     DBReader<DBKeyType> * qdbr, DBReader<DBKeyType> * tdbr,
                     bool sameDB, DBWriter & resultWriter, EvalueComputation * evaluer,
                     QueryMatcherTaxonomyHook *taxonomyHook){
@@ -47,15 +47,51 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat,
     const int querySeqType = qdbr->getDbtype();
     Sequence qSeq(par.maxSeqLen, querySeqType, subMat, 0, false, par.compBiasCorrection);
 
+    const Sequence::SeqAuxInfo *auxInfo = Sequence::getAuxInfo(querySeqType);
+    const int rows12St = (auxInfo != NULL && auxInfo->auxAlphabetSize > 0)
+        ? (int)auxInfo->auxAlphabetSize : 12;
+    const bool packedTarget =
+        (DBReader<DBKeyType>::getExtendedDbtype(tdbr->getDbtype()) & Parameters::DBTYPE_EXTENDED_AUX_SEQ) != 0;
+    const bool have12StQuery =
+        packedTarget && (subMat12St != NULL) && (qSeq.numSequenceAux != NULL);
+    if (packedTarget && have12StQuery == false) {
+        Debug(Debug::WARNING) << "GPU prefilter scores 3Di only for this run "
+                              << "(12-state channel disabled, or query DB has none)\n";
+    }
+    const size_t topN = have12StQuery
+        ? std::min(tdbr->getSize(), (size_t)std::max(1, par.gpuRescoreTopkMult) * par.maxResListLen)
+        : par.maxResListLen;
+
+    const bool isProfileQuery = Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE);
+
+    const size_t batchMax = (par.gpuServer == 0) ? 32 : 1;
+    std::vector<std::vector<int8_t> > batchProfileBuf(batchMax);
+    std::vector<std::vector<int8_t> > batchProfile12StBuf(batchMax);
+    std::vector<std::vector<unsigned char> > batchSeqBuf(batchMax);
+    std::vector<int> batchLen;
+    std::vector<int8_t*> batchPssm;
+    std::vector<int8_t*> batchPssm12St;
+    std::vector<const char*> batchSeqPtr;
+    std::vector<DBKeyType> batchKey;
+    batchLen.reserve(batchMax);
+    batchPssm.reserve(batchMax);
+    batchPssm12St.reserve(batchMax);
+    batchSeqPtr.reserve(batchMax);
+    batchKey.reserve(batchMax);
+
     std::vector<Marv::Result> results;
-    results.reserve(par.maxResListLen);
+    results.reserve(batchMax * topN);
     std::vector<hit_t> shortResults;
     std::vector<Matcher::result_t> resultsAln;
-
-    size_t profileBufferLength = par.maxSeqLen;
-    int8_t* profile = NULL;
-    if (Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE) == false) {
-        profile = (int8_t*)malloc(subMat->alphabetSize * profileBufferLength * sizeof(int8_t));
+    Masker *queryMasker = have12StQuery ? new Masker(*subMat) : NULL;
+    const unsigned char x12St = have12StQuery ? subMat12St->aa2num[static_cast<int>('X')] : 0;
+    const unsigned char x3Di = subMat->aa2num[static_cast<int>('X')];
+    const int MARV_MAX_MASK_THRESHOLD = 511;
+    int maskThreshold = (par.maskNrepeats > 0) ? par.maskNrepeats : MARV_MAX_MASK_THRESHOLD;
+    if (maskThreshold > MARV_MAX_MASK_THRESHOLD) {
+        Debug(Debug::WARNING) << "--mask-n-repeat " << maskThreshold << " exceeds the GPU limit; "
+                              << "clamping to " << MARV_MAX_MASK_THRESHOLD << "\n";
+        maskThreshold = MARV_MAX_MASK_THRESHOLD;
     }
 
     std::string resultBuffer;
@@ -148,11 +184,7 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat,
            Debug(Debug::ERROR) << "Invalid GPU database\n";
            EXIT(EXIT_FAILURE);
        }
-        int32_t maxTargetLength = lengths.back();
-        Marv::AlignmentType type = (par.prefMode == Parameters::PREF_MODE_UNGAPPED_AND_GAPPED) ?
-                Marv::AlignmentType::GAPLESS_SMITH_WATERMAN : Marv::AlignmentType::GAPLESS;
-        marv = new Marv(tdbr->getSize(), subMat->alphabetSize, maxTargetLength,
-                        par.maxResListLen, type);
+        marv = new Marv(tdbr->getSize(), subMat->alphabetSize);
         void* h = marv->loadDb(
             tdbr->getDataForFile(0), offsetData, lengthData, tdbr->getDataSizeForFile(0)
         );
@@ -170,21 +202,45 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat,
     }
 
     // marv.prefetch();
-    for (size_t id = 0; id < qdbr->getSize(); id++) {
+    for (size_t batchStart = 0; batchStart < qdbr->getSize(); batchStart += batchMax) {
         if (!keepRunningClient) {
             break;
         }
+        batchLen.clear();
+        batchPssm.clear();
+        batchPssm12St.clear();
+        batchSeqPtr.clear();
+        batchKey.clear();
+
+        const size_t batchEnd = std::min(batchStart + batchMax, qdbr->getSize());
+        for (size_t id = batchStart; id < batchEnd; id++) {
+        const size_t slot = id - batchStart;
         size_t queryKey = qdbr->getDbKey(id);
         unsigned int querySeqLen = qdbr->getSeqLen(id);
         char *querySeqData = qdbr->getData(id, 0);
         qSeq.mapSequence(id, queryKey, querySeqData, querySeqLen);
-        if (Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE)) {
-            profile = qSeq.profile_for_alignment;
+        int8_t* profile = NULL;
+        int8_t* profile12St = NULL;
+        if (packedTarget) {
+            batchProfile12StBuf[slot].assign((size_t)rows12St * (size_t)qSeq.L, 0);
+            profile12St = batchProfile12StBuf[slot].data();
+        }
+        if (isProfileQuery) {
+            batchProfileBuf[slot].assign(qSeq.profile_for_alignment,
+                                         qSeq.profile_for_alignment + (size_t)subMat->alphabetSize * (size_t)qSeq.L);
+            profile = batchProfileBuf[slot].data();
         } else {
-            if ((size_t)qSeq.L >= profileBufferLength) {
-                profileBufferLength = (size_t)qSeq.L * 1.5;
-                profile = (int8_t*)realloc(profile, subMat->alphabetSize * profileBufferLength * sizeof(int8_t));
+            if (have12StQuery) {
+                queryMasker->maskSequence(qSeq,  false, par.maskProb,
+                                           false, par.maskNrepeats);
+                for (int i = 0; i < qSeq.L; ++i) {
+                    if (qSeq.numSequence[i] == (unsigned char)queryMasker->maskLetterNum) {
+                        qSeq.numSequenceAux[i] = x12St;
+                    }
+                }
             }
+            batchProfileBuf[slot].resize((size_t)subMat->alphabetSize * (size_t)qSeq.L);
+            profile = batchProfileBuf[slot].data();
             if (compositionBias != NULL) {
                 if ((size_t)qSeq.L * sizeof(float) >= compBufferSize) {
                     compBufferSize = (size_t)qSeq.L * 1.5 * sizeof(float);
@@ -202,11 +258,47 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat,
                     profile[j * qSeq.L  + i] = subMat->subMatrix[j][qSeq.numSequence[i]] + bias;
                 }
             }
+            if (have12StQuery) {
+                for (size_t j = 0; j < (size_t)rows12St; ++j) {
+                    for (size_t i = 0; i < (size_t)qSeq.L; ++i) {
+                        profile12St[j * qSeq.L + i] = subMat12St->subMatrix[j][qSeq.numSequenceAux[i]];
+                    }
+                }
+            }
         }
-        Marv::Stats stats;
+        batchSeqBuf[slot].assign(qSeq.numSequence, qSeq.numSequence + qSeq.L);
+        batchSeqPtr.emplace_back(reinterpret_cast<const char*>(batchSeqBuf[slot].data()));
+        batchLen.emplace_back(qSeq.L);
+        batchPssm.emplace_back(profile);
+        batchPssm12St.emplace_back(profile12St);
+        batchKey.emplace_back(queryKey);
+        }
+
+        const size_t batchCount = batchLen.size();
+        std::vector<Marv::Stats> statsVec;
         if (serverMode == 0) {
-            stats = marv->scan(reinterpret_cast<const char *>(qSeq.numSequence), qSeq.L, profile, results.data());
+            if (packedTarget) {
+                statsVec = marv->search_scoreOnly_foldseek(
+                    results.data(), batchLen, batchPssm, batchPssm12St, (int)topN,
+                     true,  true,
+                     (char)x3Di,  maskThreshold);
+            } else if (par.prefMode == Parameters::PREF_MODE_UNGAPPED_AND_GAPPED) {
+                statsVec = marv->search_scoreOnly_then_scoreEndpos_for_tops(
+                    results.data(), batchSeqPtr, batchLen, batchPssm,
+                    (int)topN,  -11,  -1,
+                    Marv::AlignmentType::GAPLESS,  true,  true,
+                    Marv::AlignmentType::SMITH_WATERMAN_ENDPOS,  false,  true);
+            } else {
+                statsVec = marv->search_scoreOnly(
+                    results.data(), batchSeqPtr, batchLen, batchPssm,
+                    (int)topN, Marv::AlignmentType::GAPLESS,  -11,  -1,
+                     true,  true);
+            }
         } else {
+            statsVec.resize(1);
+            const int qLen = batchLen[0];
+            const unsigned char* qNum = batchSeqBuf[0].data();
+            const int8_t* qPssm = batchPssm[0];
             bool claimed = false;
             while (!claimed) {
                 if (layout->serverExit.load(std::memory_order_acquire) == true) {
@@ -223,9 +315,9 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat,
                 if (layout->state.compare_exchange_strong(expected, desired, std::memory_order_acq_rel)) {
                     // Debug(Debug::ERROR) << "switch to reserved\n";
                     claimed = true;
-                    memcpy(layout->getQueryPtr(), qSeq.numSequence, qSeq.L);
-                    memcpy(layout->getProfilePtr(), profile, subMat->alphabetSize * qSeq.L);
-                    layout->queryLen = qSeq.L;
+                    memcpy(layout->getQueryPtr(), qNum, qLen);
+                    memcpy(layout->getProfilePtr(), qPssm, subMat->alphabetSize * qLen);
+                    layout->queryLen = qLen;
                     std::atomic_thread_fence(std::memory_order_release);
                     // Debug(Debug::ERROR) << "switch to ready\n";
                     layout->state.store(GPUSharedMemory::READY, std::memory_order_release);
@@ -245,7 +337,7 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat,
 
                     std::atomic_thread_fence(std::memory_order_acquire);
                     memcpy(results.data(), layout->getResultsPtr(), layout->resultLen * sizeof(Marv::Result));
-                    stats.results = layout->resultLen;
+                    statsVec[0].results = layout->resultLen;
                     // Debug(Debug::ERROR) << "switch to idle\n";
                     layout->state.store(GPUSharedMemory::IDLE, std::memory_order_release);
                     if (keepRunningClient == false) {
@@ -260,9 +352,15 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat,
             EXIT(EXIT_FAILURE);
         }
 
-        for(size_t i = 0; i < stats.results; i++){
-            DBKeyType targetKey = tdbr->getDbKey(results[i].id);
-            int score = results[i].score;
+        for (size_t slot = 0; slot < batchCount; slot++) {
+        const DBKeyType queryKey = batchKey[slot];
+        const int queryLen = batchLen[slot];
+        const Marv::Result* slotResults = results.data() + slot * topN;
+        const size_t slotResultCount = statsVec[slot].results;
+
+        for(size_t i = 0; i < slotResultCount; i++){
+            DBKeyType targetKey = tdbr->getDbKey(slotResults[i].id);
+            int score = slotResults[i].score;
             if(taxonomyHook != NULL){
                 TaxID currTax = taxonomyHook->taxonomyMapping->lookup(targetKey);
                 if (taxonomyHook->expression[0]->isAncestor(currTax) == false) {
@@ -283,11 +381,11 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat,
                 if(par.prefMode == Parameters::PREF_MODE_UNGAPPED_AND_GAPPED){
                     Matcher::result_t res;
                     res.dbKey = targetKey;
-                    res.eval = evaluer->computeEvalue(score, qSeq.L);
-                    res.dbEndPos = results[i].dbEndPos;
-                    res.dbLen = tdbr->getSeqLen(results[i].id);
-                    res.qEndPos =  results[i].qEndPos;
-                    res.qLen = qSeq.L;
+                    res.eval = evaluer->computeEvalue(score, queryLen);
+                    res.dbEndPos = slotResults[i].dbEndPos;
+                    res.dbLen = tdbr->getSeqLen(slotResults[i].id);
+                    res.qEndPos =  slotResults[i].qEndPos;
+                    res.qLen = queryLen;
                     unsigned int qAlnLen = std::max(static_cast<unsigned int>(res.qEndPos), static_cast<unsigned int>(1));
                     unsigned int dbAlnLen = std::max(static_cast<unsigned int>(res.dbEndPos), static_cast<unsigned int>(1));
                     //seqId = (alignment.score1 / static_cast<float>(std::max(dbAlnLen, qAlnLen)))  * 0.1656 + 0.1141;
@@ -328,6 +426,7 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat,
         shortResults.clear();
         resultsAln.clear();
         progress.updateProgress();
+        }
     }
     if (marv != NULL) {
         delete marv;
@@ -338,8 +437,8 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat,
     if (compositionBias != NULL) {
         free(compositionBias);
     }
-    if (Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE) == false) {
-        free(profile);
+    if (queryMasker != NULL) {
+        delete queryMasker;
     }
 }
 #endif
@@ -727,7 +826,7 @@ int prefilterInternal(int argc, const char **argv, const Command &command, int m
     }
     if(par.gpu){
 #ifdef HAVE_CUDA
-        runFilterOnGpu(par, subMat, qdbr, tdbr, sameDB,
+        runFilterOnGpu(par, subMat, subMatAux, qdbr, tdbr, sameDB,
                        resultWriter, evaluer, taxonomyHook);
 #else
         Debug(Debug::ERROR) << "MMseqs2 was compiled without CUDA support\n";

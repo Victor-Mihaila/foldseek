@@ -62,9 +62,9 @@ int peakBenchmark(int argc, char* argv[]){
 
     helpers::PeerAccess peerAccess(deviceIds, false);
  
-    using KernelTypeConfig = cudasw4::KernelTypeConfig;
-    using MemoryConfig = cudasw4::MemoryConfig;
-    using ScanResult = cudasw4::ScanResult;
+    using KernelTypeConfig = libmarv::KernelTypeConfig;
+    using MemoryConfig = libmarv::MemoryConfig;
+    using ScanResult = libmarv::ScanResult;
 
     KernelTypeConfig kernelTypeConfig;
     kernelTypeConfig.singlePassType = options.singlePassType;
@@ -78,7 +78,7 @@ int peakBenchmark(int argc, char* argv[]){
     memoryConfig.maxTempBytes = options.maxTempBytes;
     memoryConfig.maxGpuMem = options.maxGpuMem;
 
-    cudasw4::CudaSW4 cudaSW4(
+    libmarv::CudaSW4 cudaSW4(
         deviceIds, 
         options.numTopOutputs,
         options.blosumType, 
@@ -105,7 +105,7 @@ int peakBenchmark(int argc, char* argv[]){
             std::cout << "Generating pseudo db\n";
         }
         helpers::CpuTimer timer_read_db("Generate DB");
-        auto fullDB_tmp = std::make_shared<cudasw4::PseudoDB>(cudasw4::loadPseudoDB(
+        auto fullDB_tmp = std::make_shared<libmarv::PseudoDB>(libmarv::loadPseudoDB(
             options.pseudoDBSize, 
             options.pseudoDBLength,
             options.pseudoDBSameSequence
@@ -134,7 +134,7 @@ int peakBenchmark(int argc, char* argv[]){
 
         std::cout.flush();
 
-        cudasw4::DecodedQueryView queryView(sequence.data(), sequence.size());
+        libmarv::DecodedQueryView queryView(sequence.data(), sequence.size());
         ScanResult scanResult = cudaSW4.scan(queryView, std::nullopt);
 
         std::cout << "Done. Scan time: " << scanResult.stats.seconds << " s, " << scanResult.stats.gcups << " GCUPS\n";
@@ -193,9 +193,9 @@ int gridsearchPseudo(int argc, char* argv[]){
 
     helpers::PeerAccess peerAccess(deviceIds, false);
  
-    using KernelTypeConfig = cudasw4::KernelTypeConfig;
-    using MemoryConfig = cudasw4::MemoryConfig;
-    using ScanResult = cudasw4::ScanResult;
+    using KernelTypeConfig = libmarv::KernelTypeConfig;
+    using MemoryConfig = libmarv::MemoryConfig;
+    using ScanResult = libmarv::ScanResult;
 
     KernelTypeConfig kernelTypeConfig;
     kernelTypeConfig.singlePassType = options.singlePassType;
@@ -209,7 +209,7 @@ int gridsearchPseudo(int argc, char* argv[]){
     memoryConfig.maxTempBytes = options.maxTempBytes;
     memoryConfig.maxGpuMem = options.maxGpuMem;
 
-    cudasw4::CudaSW4 cudaSW4(
+    libmarv::CudaSW4 cudaSW4(
         deviceIds, 
         options.numTopOutputs,
         options.blosumType, 
@@ -240,7 +240,7 @@ int gridsearchPseudo(int argc, char* argv[]){
                 std::cout << "Generating pseudo db\n";
             }
             helpers::CpuTimer timer_read_db("Generate DB");
-            auto fullDB_tmp = std::make_shared<cudasw4::PseudoDB>(cudasw4::loadPseudoDB(
+            auto fullDB_tmp = std::make_shared<libmarv::PseudoDB>(libmarv::loadPseudoDB(
                 options.pseudoDBSize, 
                 options.pseudoDBLength,
                 options.pseudoDBSameSequence
@@ -286,7 +286,7 @@ int gridsearchPseudo(int argc, char* argv[]){
                     //if(groupsize >= 4){
                         cudaSW4.setGroupConfig(groupsize, numRegs);
 
-                        cudasw4::DecodedQueryView queryView(sequence.data(), sequence.size());
+                        libmarv::DecodedQueryView queryView(sequence.data(), sequence.size());
                         ScanResult scanResult = cudaSW4.scan(queryView, std::nullopt);
                         gcupsVector.push_back(scanResult.stats.gcups);
                     }else{
@@ -372,10 +372,10 @@ int gridsearchPseudo_SW(int argc, char* argv[]){
 
     helpers::PeerAccess peerAccess(deviceIds, false);
  
-    using KernelTypeConfig = cudasw4::KernelTypeConfig;
-    using MemoryConfig = cudasw4::MemoryConfig;
-    using ScanResult = cudasw4::ScanResult;
-    using ScanType = cudasw4::ScanType;
+    using KernelTypeConfig = libmarv::KernelTypeConfig;
+    using MemoryConfig = libmarv::MemoryConfig;
+    using ScanResult = libmarv::ScanResult;
+    using ScanType = libmarv::ScanType;
 
     KernelTypeConfig kernelTypeConfig;
     kernelTypeConfig.singlePassType = options.singlePassType;
@@ -389,7 +389,7 @@ int gridsearchPseudo_SW(int argc, char* argv[]){
     memoryConfig.maxTempBytes = options.maxTempBytes;
     memoryConfig.maxGpuMem = options.maxGpuMem;
 
-    cudasw4::CudaSW4 cudaSW4(
+    libmarv::CudaSW4 cudaSW4(
         deviceIds, 
         options.numTopOutputs,
         options.blosumType, 
@@ -420,7 +420,7 @@ int gridsearchPseudo_SW(int argc, char* argv[]){
             std::cout << "Generating pseudo db\n";
         }
         helpers::CpuTimer timer_read_db("Generate DB");
-        auto fullDB_tmp = std::make_shared<cudasw4::PseudoDB>(cudasw4::loadPseudoDB(
+        auto fullDB_tmp = std::make_shared<libmarv::PseudoDB>(libmarv::loadPseudoDB(
             options.pseudoDBSize, 
             options.pseudoDBLength,
             options.pseudoDBSameSequence
@@ -459,7 +459,7 @@ int gridsearchPseudo_SW(int argc, char* argv[]){
                 //if(groupsize >= 4){
                     cudaSW4.setGroupConfig(groupsize, numRegs);
 
-                    cudasw4::DecodedQueryView queryView(sequence.data(), sequence.size());
+                    libmarv::DecodedQueryView queryView(sequence.data(), sequence.size());
                     ScanResult scanResult = cudaSW4.scan(queryView, std::nullopt);
                     gcupsVector.push_back(scanResult.stats.gcups);
                 }else{
@@ -542,9 +542,9 @@ int gridsearchReal(int argc, char* argv[]){
 
     helpers::PeerAccess peerAccess(deviceIds, false);
  
-    using KernelTypeConfig = cudasw4::KernelTypeConfig;
-    using MemoryConfig = cudasw4::MemoryConfig;
-    using ScanResult = cudasw4::ScanResult;
+    using KernelTypeConfig = libmarv::KernelTypeConfig;
+    using MemoryConfig = libmarv::MemoryConfig;
+    using ScanResult = libmarv::ScanResult;
 
     KernelTypeConfig kernelTypeConfig;
     kernelTypeConfig.singlePassType = options.singlePassType;
@@ -558,7 +558,7 @@ int gridsearchReal(int argc, char* argv[]){
     memoryConfig.maxTempBytes = options.maxTempBytes;
     memoryConfig.maxGpuMem = options.maxGpuMem;
 
-    cudasw4::CudaSW4 cudaSW4(
+    libmarv::CudaSW4 cudaSW4(
         deviceIds, 
         options.numTopOutputs,
         options.blosumType, 
@@ -574,18 +574,18 @@ int gridsearchReal(int argc, char* argv[]){
         helpers::CpuTimer timer_read_db("Read DB");
         constexpr bool writeAccess = false;
         const bool prefetchSeq = options.prefetchDBFile;
-        auto fullDB_tmp = std::make_shared<cudasw4::DB>(cudasw4::loadDB(options.dbPrefix, writeAccess, prefetchSeq));
+        auto fullDB_tmp = std::make_shared<libmarv::DB>(libmarv::loadDB(options.dbPrefix, writeAccess, prefetchSeq));
         if(options.verbose){
             timer_read_db.print();
         }
 
         cudaSW4.setDatabase(fullDB_tmp);
-    }catch(cudasw4::LoadDBException& ex){
+    }catch(libmarv::LoadDBException& ex){
         if(options.verbose){
             std::cout << "Failed to map db files. Using fallback db. Error message: " << ex.what() << "\n";
         }
         helpers::CpuTimer timer_read_db("Read DB");
-        auto fullDB_tmp = std::make_shared<cudasw4::DBWithVectors>(cudasw4::loadDBWithVectors(options.dbPrefix));
+        auto fullDB_tmp = std::make_shared<libmarv::DBWithVectors>(libmarv::loadDBWithVectors(options.dbPrefix));
         if(options.verbose){
             timer_read_db.print();
         }
@@ -634,7 +634,7 @@ int gridsearchReal(int argc, char* argv[]){
                 if(groupsize >= 8){
                     cudaSW4.setGroupConfig(groupsize, numRegs);
 
-                    cudasw4::DecodedQueryView queryView(sequence.data(), sequence.size());
+                    libmarv::DecodedQueryView queryView(sequence.data(), sequence.size());
                     ScanResult scanResult = cudaSW4.scan(queryView, std::nullopt);
                     gcupsVector.push_back(scanResult.stats.gcups);
                 }else{
@@ -725,9 +725,9 @@ int lengthbenchmarkReal(int argc, char* argv[], int firstLength, int lastLength,
 
     helpers::PeerAccess peerAccess(deviceIds, false);
  
-    using KernelTypeConfig = cudasw4::KernelTypeConfig;
-    using MemoryConfig = cudasw4::MemoryConfig;
-    using ScanResult = cudasw4::ScanResult;
+    using KernelTypeConfig = libmarv::KernelTypeConfig;
+    using MemoryConfig = libmarv::MemoryConfig;
+    using ScanResult = libmarv::ScanResult;
 
     KernelTypeConfig kernelTypeConfig;
     kernelTypeConfig.singlePassType = options.singlePassType;
@@ -741,7 +741,7 @@ int lengthbenchmarkReal(int argc, char* argv[], int firstLength, int lastLength,
     memoryConfig.maxTempBytes = options.maxTempBytes;
     memoryConfig.maxGpuMem = options.maxGpuMem;
 
-    cudasw4::CudaSW4 cudaSW4(
+    libmarv::CudaSW4 cudaSW4(
         deviceIds, 
         options.numTopOutputs,
         options.blosumType, 
@@ -757,18 +757,18 @@ int lengthbenchmarkReal(int argc, char* argv[], int firstLength, int lastLength,
         helpers::CpuTimer timer_read_db("Read DB");
         constexpr bool writeAccess = false;
         const bool prefetchSeq = options.prefetchDBFile;
-        auto fullDB_tmp = std::make_shared<cudasw4::DB>(cudasw4::loadDB(options.dbPrefix, writeAccess, prefetchSeq));
+        auto fullDB_tmp = std::make_shared<libmarv::DB>(libmarv::loadDB(options.dbPrefix, writeAccess, prefetchSeq));
         if(options.verbose){
             timer_read_db.print();
         }
 
         cudaSW4.setDatabase(fullDB_tmp);
-    }catch(cudasw4::LoadDBException& ex){
+    }catch(libmarv::LoadDBException& ex){
         if(options.verbose){
             std::cout << "Failed to map db files. Using fallback db. Error message: " << ex.what() << "\n";
         }
         helpers::CpuTimer timer_read_db("Read DB");
-        auto fullDB_tmp = std::make_shared<cudasw4::DBWithVectors>(cudasw4::loadDBWithVectors(options.dbPrefix));
+        auto fullDB_tmp = std::make_shared<libmarv::DBWithVectors>(libmarv::loadDBWithVectors(options.dbPrefix));
         if(options.verbose){
             timer_read_db.print();
         }
@@ -802,7 +802,7 @@ int lengthbenchmarkReal(int argc, char* argv[], int firstLength, int lastLength,
         std::cout << "Processing query length " << sequence.size();
 
 
-        cudasw4::DecodedQueryView queryView(sequence.data(), sequence.size());
+        libmarv::DecodedQueryView queryView(sequence.data(), sequence.size());
         ScanResult scanResult = cudaSW4.scan(queryView, std::nullopt);
         std::cout << scanResult.stats.gcups << " GCUPS\n";
                     
@@ -877,9 +877,9 @@ int peakbenchmarkAllSingleTileConfigs(int argc, char* argv[]){
 
     helpers::PeerAccess peerAccess(deviceIds, false);
  
-    using KernelTypeConfig = cudasw4::KernelTypeConfig;
-    using MemoryConfig = cudasw4::MemoryConfig;
-    using ScanResult = cudasw4::ScanResult;
+    using KernelTypeConfig = libmarv::KernelTypeConfig;
+    using MemoryConfig = libmarv::MemoryConfig;
+    using ScanResult = libmarv::ScanResult;
 
     KernelTypeConfig kernelTypeConfig;
     kernelTypeConfig.singlePassType = options.singlePassType;
@@ -907,9 +907,9 @@ int peakbenchmarkAllSingleTileConfigs(int argc, char* argv[]){
     writeBenchmarkDataHeader(std::cout);
 
     auto execute = [&](std::string /*outputfilename*/, KernelApproach kernelApproach, bool useDPX){
-        kernelTypeConfig.singlePassType = useDPX ? cudasw4::KernelType::DPXs16 : cudasw4::KernelType::Half2;
+        kernelTypeConfig.singlePassType = useDPX ? libmarv::KernelType::DPXs16 : libmarv::KernelType::Half2;
 
-        cudasw4::CudaSW4 cudaSW4(
+        libmarv::CudaSW4 cudaSW4(
             deviceIds, 
             options.numTopOutputs,
             options.blosumType, 
@@ -950,7 +950,7 @@ int peakbenchmarkAllSingleTileConfigs(int argc, char* argv[]){
                     std::cout << "Generating pseudo db\n";
                 }
                 helpers::CpuTimer timer_read_db("Generate DB");
-                auto fullDB_tmp = std::make_shared<cudasw4::PseudoDB>(cudasw4::loadPseudoDB(
+                auto fullDB_tmp = std::make_shared<libmarv::PseudoDB>(libmarv::loadPseudoDB(
                     options.pseudoDBSize, 
                     options.pseudoDBLength,
                     options.pseudoDBSameSequence
@@ -980,7 +980,7 @@ int peakbenchmarkAllSingleTileConfigs(int argc, char* argv[]){
                 // logfile << sequence.size() << "\n";
 
                 cudaSW4.setGroupConfig(groupsize, numRegs);
-                cudasw4::DecodedQueryView queryView(sequence.data(), sequence.size());
+                libmarv::DecodedQueryView queryView(sequence.data(), sequence.size());
                 ScanResult scanResult = cudaSW4.scan(queryView, std::nullopt);
 
                 benchmarkData.gcups = scanResult.stats.gcups;

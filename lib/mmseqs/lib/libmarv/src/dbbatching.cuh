@@ -13,7 +13,8 @@
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/scan.h>
 
-namespace cudasw4{
+#include "namespace.hpp"
+LIBMARV_NAMESPACE_BEGIN
 
     struct DeviceBatchCopyToPinnedPlan{
         struct CopyRange{
@@ -277,6 +278,6 @@ namespace cudasw4{
         ); CUERR;
     }
 
-}
+LIBMARV_NAMESPACE_END
 
 #endif

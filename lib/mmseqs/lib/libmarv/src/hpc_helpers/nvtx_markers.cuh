@@ -9,6 +9,7 @@
 
 #if defined(__NVCC__) && !defined(NO_NVTOOLSEXT)
 #include <nvtx3/nvToolsExt.h>
+#include <nvtx3/nvtx3.hpp>
 #endif
 
 #include <iostream>
