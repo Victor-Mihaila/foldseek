@@ -43,6 +43,8 @@ LocalParameters::LocalParameters() :
         PARAM_PDB_OUTPUT_MODE(PARAM_PDB_OUTPUT_MODE_ID, "--pdb-output-mode", "PDB output mode", "PDB output mode:\n0: Single multi-model PDB file\n1: One PDB file per chain\n2: One PDB file per complex", typeid(int), (void *) &pdbOutputMode, "^[0-2]{1}$", MMseqsParameter::COMMAND_MISC),
         PARAM_PDB_OUTPUT_FORMAT(PARAM_PDB_OUTPUT_FORMAT_ID, "--pdb-output-format", "PDB output format", "Format of output structures:\n0: PDB\n1: mmCIF (keeps multi-character chain names)", typeid(int), (void *) &pdbOutputFormat, "^[0-1]{1}$", MMseqsParameter::COMMAND_MISC),
         PARAM_PROSTT5_MODEL(PARAM_PROSTT5_MODEL_ID, "--prostt5-model", "Path to ProstT5", "Path to ProstT5 model", typeid(std::string), (void *) &prostt5Model, "^.*$", MMseqsParameter::COMMAND_COMMON),
+        PARAM_MODERNPROST_MODEL(PARAM_MODERNPROST_MODEL_ID, "--modernprost-model", "Path to ModernProst", "Path to ModernProst 3Di+12-state GGUF model; predicts both alphabets and writes a packed 12-state _ss db", typeid(std::string), (void *) &modernprostModel, "^.*$", MMseqsParameter::COMMAND_COMMON),
+        PARAM_MODERNPROST_BATCH(PARAM_MODERNPROST_BATCH_ID, "--modernprost-batch", "ModernProst batch size", "Sequences per ModernProst forward pass (length-sorted; the residue budget can close a batch earlier)", typeid(int), (void *) &modernprostBatch, "^[1-9]{1}[0-9]*$", MMseqsParameter::COMMAND_COMMON),
 	    PARAM_DISTANCE_THRESHOLD(PARAM_DISTANCE_THRESHOLD_ID, "--distance-threshold", "Interface distance threshold", "Residues with C-alpha below this threshold will be part of interface", typeid(float), (void *) &distanceThreshold, "^[0-9]*(\\.[0-9]+)?$"),
         PARAM_MIN_INTERFACE_RESIDUE_PER_CHAIN(PARAM_MIN_INTERFACE_RESIDUE_PER_CHAIN_ID, "--min-interface-residues-perchain", "Minimum number of interface residues per chain","save dimer/interface if there are N numbers of residues per chain" ,typeid(int), (void *) &minResidueNum, "^[0-9]{1}[0-9]*$"),
         PARAM_MULTIMER_TM_THRESHOLD(PARAM_MULTIMER_TM_THRESHOLD_ID,"--multimer-tm-threshold", "whole structure's TMscore threshold", "accept alignments with a multimer tmsore > thr [0.0,1.0]",typeid(float), (void *) &filtMultTmThr, "^0(\\.[0-9]+)?|1(\\.0+)?$"),
@@ -108,6 +110,8 @@ LocalParameters::LocalParameters() :
     // structurecreatedb
     structurecreatedb.push_back(&PARAM_GPU);
     structurecreatedb.push_back(&PARAM_PROSTT5_MODEL);
+    structurecreatedb.push_back(&PARAM_MODERNPROST_MODEL);
+    structurecreatedb.push_back(&PARAM_MODERNPROST_BATCH);
     structurecreatedb.push_back(&PARAM_CHAIN_NAME_MODE);
     structurecreatedb.push_back(&PARAM_MODEL_NAME_MODE);
     structurecreatedb.push_back(&PARAM_WRITE_MAPPING);
@@ -447,6 +451,8 @@ LocalParameters::LocalParameters() :
     fileExclude = "^$";
     prostt5SplitLength = 1024;
     prostt5Model = "";
+    modernprostModel = "";
+    modernprostBatch = 8;
     saveResIndex = false;
 
     // search parameter

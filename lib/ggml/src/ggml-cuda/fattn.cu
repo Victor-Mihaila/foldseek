@@ -294,6 +294,10 @@ static void ggml_cuda_flash_attn_ext_mma_f16(ggml_backend_cuda_context & ctx, gg
     const ggml_tensor * mask = dst->src[3];
 
     switch (Q->ne[0]) {
+        case 32:
+            GGML_ASSERT(V->ne[0] == 32);
+            ggml_cuda_flash_attn_ext_mma_f16_switch_ncols2< 32,  32>(ctx, dst);
+            break;
         case 64:
             GGML_ASSERT(V->ne[0] == 64);
             ggml_cuda_flash_attn_ext_mma_f16_switch_ncols2< 64,  64>(ctx, dst);
@@ -574,6 +578,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     const int cc = ggml_cuda_info().devices[device].cc;
 
     switch (K->ne[0]) {
+        case  32:
         case  40:
         case  64:
         case  72:
@@ -635,7 +640,9 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && Q->ne[0] != 192 && K->ne[1] % FATTN_KQ_STRIDE == 0;
 
     // If Turing tensor cores are available, use them:
-    if (turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {
+    static const bool d32_tile = getenv("GGML_FA_D32_TILE") != nullptr;
+    if (turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72
+        && !(d32_tile && Q->ne[0] == 32)) {
         if (can_use_vector_kernel) {
             if (!ggml_is_quantized(K->type) && !ggml_is_quantized(V->type)) {
                 // the sparse gather exists only in the MMA kernel: (DKQ, DV, 1, 8) with GQA > 4

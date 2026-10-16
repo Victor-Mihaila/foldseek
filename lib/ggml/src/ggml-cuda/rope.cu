@@ -196,6 +196,40 @@ static __global__ void rope_neox(const T *            x,
     dst[idst + n_offs/2 + n_dims / 2] = ggml_cuda_cast<D>(x0 * sin_theta + x1 * cos_theta);
 }
 
+template <bool forward, bool has_ff, typename T, typename D>
+static __global__ void rope_neox_small(const T * x, D * dst, const int ne00, const int ne01, const int ne02,
+                                       const int s01, const int s02, const int s03,
+                                       const int s1, const int s2, const int s3, const int n_dims, const int nr,
+                                       const int32_t * pos, const float freq_scale, const float ext_factor,
+                                       const float attn_factor, const rope_corr_dims corr_dims,
+                                       const float theta_scale, const float * freq_factors) {
+    ggml_cuda_pdl_lc();
+    const int ip      = threadIdx.x;
+    const int row_dst = blockIdx.x*blockDim.y + threadIdx.y;
+    if (2*ip >= n_dims || row_dst >= nr) {
+        return;
+    }
+    const uint32_t i3 = row_dst / (ne01 * ne02);
+    const uint32_t i2 = (row_dst - i3 * ne01 * ne02) / ne01;
+    const uint32_t i1 = row_dst - i3 * ne01 * ne02 - i2 * ne01;
+
+    const int idst = ip + i1 * s1  + i2 * s2  + i3 * s3;
+    const int ix   = ip + i1 * s01 + i2 * s02 + i3 * s03;
+    ggml_cuda_pdl_sync();
+
+    const int   iw          = 2*ip;
+    const float theta_base  = pos[i2]*powf(theta_scale, iw/2.0f);
+    const float freq_factor = has_ff ? freq_factors[iw/2] : 1.0f;
+    float cos_theta;
+    float sin_theta;
+    rope_yarn<forward>(theta_base/freq_factor, freq_scale, corr_dims, iw, ext_factor, attn_factor, cos_theta, sin_theta);
+
+    const float x0 = x[ix];
+    const float x1 = x[ix + n_dims/2];
+    dst[idst]            = ggml_cuda_cast<D>(x0 * cos_theta - x1 * sin_theta);
+    dst[idst + n_dims/2] = ggml_cuda_cast<D>(x0 * sin_theta + x1 * cos_theta);
+}
+
 template <bool forward, bool has_ff, typename T>
 static __global__ void rope_multi(const T *            x,
                                   T *                  dst,
@@ -425,11 +459,29 @@ static void rope_neox_cuda(const T *            x,
                            const bool           inplace,
                            cudaStream_t         stream) {
     GGML_ASSERT(ne00 % 2 == 0);
+    const float theta_scale = powf(freq_base, -2.0f / n_dims);
+
+    if (ne00 <= 64 && n_dims == ne00 && n_offs == 0 && set_rows_stride == 0 && !inplace
+            && getenv("GGML_CUDA_ROPE_NO_SMALL") == nullptr) {
+        const int npairs = ne00 / 2;
+        const int rows   = CUDA_ROPE_BLOCK_SIZE / npairs;
+        const dim3 sb_dims(npairs, rows, 1);
+        const dim3 sb_nums((nr + rows - 1) / rows, 1, 1);
+        const ggml_cuda_kernel_launch_params sp = {sb_nums, sb_dims, 0, stream};
+        if (freq_factors == nullptr) {
+            ggml_cuda_kernel_launch(rope_neox_small<forward, false, T, D>, sp, x, dst, ne00, ne01, ne02, s01, s02, s03,
+                s1, s2, s3, n_dims, nr, pos, freq_scale, ext_factor, attn_factor, corr_dims, theta_scale, freq_factors);
+        } else {
+            ggml_cuda_kernel_launch(rope_neox_small<forward, true, T, D>, sp, x, dst, ne00, ne01, ne02, s01, s02, s03,
+                s1, s2, s3, n_dims, nr, pos, freq_scale, ext_factor, attn_factor, corr_dims, theta_scale, freq_factors);
+        }
+        return;
+    }
+
     const dim3 block_dims(1, CUDA_ROPE_BLOCK_SIZE, 1);
     const int  n_blocks_x = (ne00 + 2 * CUDA_ROPE_BLOCK_SIZE - 1) / (2 * CUDA_ROPE_BLOCK_SIZE);
     const dim3 block_nums(nr, n_blocks_x, 1);
 
-    const float theta_scale = powf(freq_base, -2.0f / n_dims);
     const ggml_cuda_kernel_launch_params launch_params = {block_nums, block_dims, 0, stream};
 
     if (freq_factors == nullptr) {

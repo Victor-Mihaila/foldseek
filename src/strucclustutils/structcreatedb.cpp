@@ -18,6 +18,9 @@
 #include "itoa.h"
 #include "MathUtil.h"
 
+#ifdef HAVE_MODERNPROST
+#include "ModernProst.h"
+#endif
 #ifdef HAVE_PROSTT5
 #include "ProstT5.h"
 #if !defined(__CYGWIN__) && !defined(__EMSCRIPTEN__) && !defined(__APPLE__)
@@ -479,6 +482,159 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
     LocalParameters& par = LocalParameters::getLocalInstance();
     par.parseParameters(argc, argv, command, false, 0, MMseqsParameter::COMMAND_COMMON);
     std::string outputName = par.filenames.back();
+    if (par.modernprostModel != "") {
+#ifdef HAVE_MODERNPROST
+        if (par.prostt5Model != "") {
+            Debug(Debug::ERROR) << "--modernprost-model and --prostt5-model are mutually exclusive\n";
+            return EXIT_FAILURE;
+        }
+        for (size_t i = 0; i < command.params->size(); ++i) {
+            command.params->at(i)->wasSet = false;
+        }
+        par.shuffleDatabase = true;
+        par.PARAM_SHUFFLE.wasSet = true;
+        const int origGpuMp = par.gpu;
+        par.gpu = 0;
+        par.PARAM_GPU.wasSet = true;
+        par.maskMode = 0;
+        par.PARAM_MASK_RESIDUES.wasSet = true;
+        par.maskNrepeats = 0;
+        par.PARAM_MASK_N_REPEAT.wasSet = true;
+        std::vector<const char*> mpArgv;
+        mpArgv.reserve(argc + 1);
+        for (int i = 0; i < argc; ++i) {
+            const char* arg = argv[i];
+            if (strcmp(arg, par.PARAM_MODERNPROST_MODEL.name) == 0
+             || strcmp(arg, par.PARAM_GPU.name) == 0
+             || strcmp(arg, par.PARAM_MASK_RESIDUES.name) == 0
+             || strcmp(arg, par.PARAM_MASK_N_REPEAT.name) == 0) {
+                if (i + 1 < argc) {
+                    ++i;
+                }
+                continue;
+            }
+            if (strcmp(arg, par.PARAM_SHUFFLE.name) == 0) {
+                if (i + 1 < argc && argv[i + 1][0] != '-') {
+                    ++i;
+                }
+                continue;
+            }
+            mpArgv.push_back(arg);
+        }
+        int mpArgc = static_cast<int>(mpArgv.size());
+        mpArgv.push_back(NULL);
+        int mpStatus = createdb(mpArgc, mpArgv.data(), command);
+        if (mpStatus != EXIT_SUCCESS) {
+            return mpStatus;
+        }
+        fflush(stdout);
+        par.gpu = origGpuMp;
+
+        DBReader<unsigned int> reader(outputName.c_str(), (outputName + ".index").c_str(),
+                                      par.threads, DBReader<unsigned int>::USE_INDEX | DBReader<unsigned int>::USE_DATA);
+        reader.open(DBReader<unsigned int>::NOSORT);
+        reader.readMmapedDataInMemory();
+
+        std::string blosum;
+        for (size_t i = 0; i < par.substitutionMatrices.size(); i++) {
+            if (par.substitutionMatrices[i].name == "blosum62.out") {
+                std::string matrixData((const char *) par.substitutionMatrices[i].subMatData,
+                                       par.substitutionMatrices[i].subMatDataLen);
+                std::string matrixName = par.substitutionMatrices[i].name;
+                char * ser = BaseMatrix::serialize(matrixName, matrixData);
+                blosum.assign(ser);
+                free(ser);
+                break;
+            }
+        }
+        SubstitutionMatrix subMatAA(blosum.c_str(), 1.4, 0.0);
+        unsigned char aaBlock[32][25];
+        memset(aaBlock, 0, sizeof(aaBlock));
+        for (int a = 0; a < subMatAA.alphabetSize && a < 32; ++a) {
+            for (int b = 0; b < 20; ++b) {
+                float v = subMatAA.subMatrix[a][b] * 4.0f;
+                v = v < 0 ? v - 0.5f : v + 0.5f;
+                if (v < -128.0f) v = -128.0f;
+                if (v >  127.0f) v =  127.0f;
+                aaBlock[a][b] = (unsigned char) (signed char) (int) v;
+            }
+            aaBlock[a][20] = (unsigned char) a;
+            aaBlock[a][21] = (unsigned char) a;
+        }
+
+        const std::string ssDb    = outputName + "_ss";
+        const std::string ss12Db  = outputName + "_ss12";
+        const std::string aaTmp   = outputName + "_aaprof";
+        const int profType = Parameters::DBTYPE_HMM_PROFILE;
+        {
+            DBWriter wSs  (ssDb.c_str(),   (ssDb   + ".index").c_str(), par.threads, par.compressed, profType);
+            DBWriter wSs12(ss12Db.c_str(), (ss12Db + ".index").c_str(), par.threads, par.compressed, profType);
+            DBWriter wAA  (aaTmp.c_str(),  (aaTmp  + ".index").c_str(), par.threads, par.compressed, profType);
+            wSs.open(); wSs12.open(); wAA.open();
+            Debug::Progress progress(reader.getSize());
+            const std::string device = par.gpu == 1 ? "cuda" : "cpu";
+            const int mpThreads = par.gpu == 1 ? 1 : par.threads;
+#pragma omp parallel num_threads(mpThreads)
+            {
+                int thread_idx = 0;
+#ifdef OPENMP
+                thread_idx = omp_get_thread_num();
+#endif
+                ModernProstModel model(par.modernprostModel, device);
+                ModernProst context(model, 1);
+                std::vector<uint8_t> r3, r12, rAA;
+                const size_t blockSize = par.gpu == 1 ? (size_t) 32768
+                                                      : (size_t) std::max(1, par.modernprostBatch) * 8;
+                std::vector<std::string> blkSeq;
+                std::vector<unsigned int> blkKey;
+                std::vector<std::vector<uint8_t>> blk3, blk12;
+                ModernProstBatchPolicy pol;
+                pol.batch_size = std::max(1, par.modernprostBatch);
+#pragma omp for schedule(dynamic, 1)
+                for (size_t base = 0; base < reader.getSize(); base += blockSize) {
+                    const size_t hi = std::min(base + blockSize, reader.getSize());
+                    blkSeq.clear(); blkKey.clear();
+                    for (size_t i = base; i < hi; ++i) {
+                        blkKey.push_back(reader.getDbKey(i));
+                        blkSeq.emplace_back(reader.getData(i, thread_idx), reader.getSeqLen(i));
+                    }
+                    auto onDone = [&progress](size_t n) { for (size_t d = 0; d < n; ++d) progress.updateProgress(); };
+                    if (!context.predict_profiles_many(blkSeq, blk3, blk12, pol, onDone)) {
+                        Debug(Debug::ERROR) << "ModernProst inference failed near key " << blkKey[0] << "\n";
+                        EXIT(EXIT_FAILURE);
+                    }
+                    for (size_t k = 0; k < blkSeq.size(); ++k) {
+                        const unsigned int key = blkKey[k];
+                        const std::string & seq = blkSeq[k];
+                        const size_t length = seq.size();
+                        r3 = std::move(blk3[k]); r12 = std::move(blk12[k]);
+                    rAA.assign(length * 25, 0);
+                    for (size_t j = 0; j < length; ++j) {
+                        const int a = subMatAA.aa2num[(int)(unsigned char) seq[j]];
+                        memcpy(rAA.data() + j * 25, aaBlock[a < 32 ? a : 0], 25);
+                    }
+                    wSs.writeData((const char *) r3.data(),  r3.size(),  key, thread_idx);
+                    wSs12.writeData((const char *) r12.data(), r12.size(), key, thread_idx);
+                    wAA.writeData((const char *) rAA.data(), rAA.size(), key, thread_idx);
+                    }
+                }
+            }
+            wSs.close(true); wSs12.close(true); wAA.close(true);
+        }
+        reader.close();
+
+        DBReader<unsigned int>::removeDb(outputName);
+        DBReader<unsigned int>::moveDb(aaTmp, outputName);
+        Debug(Debug::INFO) << "ModernProst profile db written: " << outputName
+                           << " {,_ss,_ss12} (" << Parameters::DBTYPE_HMM_PROFILE << " = HMM_PROFILE)\n";
+        return EXIT_SUCCESS;
+#else
+        Debug(Debug::ERROR) << "Foldseek was compiled without ModernProst support "
+                               "(configure with -DENABLE_PROSTT5=0 -DENABLE_MODERNPROST=1)\n";
+        EXIT(EXIT_FAILURE);
+#endif
+    }
+
     if (par.prostt5Model != "") {
 #ifdef HAVE_PROSTT5
         // reset set parameters

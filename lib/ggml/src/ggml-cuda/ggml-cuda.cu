@@ -1503,13 +1503,27 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
 
     const int cc = ggml_cuda_info().devices[ctx.device].cc;
     bool prefer_f32_output = false;
+    static const int f32out_env = getenv("GGML_CUDA_F32_OUTPUT")
+                                ? atoi(getenv("GGML_CUDA_F32_OUTPUT")) : -1;
     if (compute_type == GGML_TYPE_F16) {
         prefer_f32_output = cc == GGML_CUDA_CC_VOLTA || GGML_CUDA_CC_IS_RDNA4(cc) || GGML_CUDA_CC_IS_CDNA(cc);
     } else if (compute_type == GGML_TYPE_BF16) {
         prefer_f32_output = !GGML_CUDA_CC_IS_RDNA3(cc) && !GGML_CUDA_CC_IS_CDNA(cc);
     }
 
-    if (prefer_f32_output) {
+    if (f32out_env >= 0 && (compute_type == GGML_TYPE_F16 || compute_type == GGML_TYPE_BF16)) {
+        prefer_f32_output = (f32out_env == 1);
+    }
+
+    const bool dst_is_f16 = dst->type == GGML_TYPE_F16;
+    if (dst_is_f16) {
+        GGML_ASSERT(compute_type == GGML_TYPE_F16);
+        dst_ptr = (char *) dst->data;
+        cu_data_type    = CUDA_R_16F;
+        cu_compute_type = CUBLAS_COMPUTE_32F;
+        alpha = batched_mul_mat_traits<GGML_TYPE_F32>::get_alpha();
+        beta  = batched_mul_mat_traits<GGML_TYPE_F32>::get_beta();
+    } else if (prefer_f32_output) {
         dst_ptr = (char *) dst_ddf;
         cu_compute_type = batched_mul_mat_traits<GGML_TYPE_F32>::compute_type;
         cu_data_type = batched_mul_mat_traits<GGML_TYPE_F32>::data_type;
@@ -1607,8 +1621,7 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
                 CUBLAS_GEMM_DEFAULT_TENSOR_OP));
     }
 
-    // Convert output back to F32 if needed
-    if (cu_data_type != CUDA_R_32F) {
+    if (cu_data_type != CUDA_R_32F && !dst_is_f16) {
         const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(traits::ggml_type_val);
         to_fp32_cuda(dst_temp.get(), dst_ddf, ne_dst, main_stream);
     }

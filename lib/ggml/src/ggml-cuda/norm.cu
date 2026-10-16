@@ -1,9 +1,10 @@
 #include "norm.cuh"
+#include "convert.cuh"
 #include <cstdint>
 
-template <int block_size>
+template <int block_size, typename T_in = float, typename T_out = float>
 static __global__ void norm_f32(
-        const float * x, float * dst, const int ncols, const int64_t stride_row, const int64_t stride_channel,
+        const T_in * x, T_out * dst, const int ncols, const int64_t stride_row, const int64_t stride_channel,
         const int64_t stride_sample, const float eps) {
     const int nrows     = gridDim.x;
     const int nchannels = gridDim.y;
@@ -20,7 +21,7 @@ static __global__ void norm_f32(
 
     ggml_cuda_pdl_sync();
     for (int col = tid; col < ncols; col += block_size) {
-        const float xi = x[col];
+        const float xi = ggml_cuda_cast<float>(x[col]);
         mean_var.x += xi;
         mean_var.y += xi * xi;
     }
@@ -34,7 +35,7 @@ static __global__ void norm_f32(
     const float inv_std = rsqrtf(var + eps);
 
     for (int col = tid; col < ncols; col += block_size) {
-        dst[col] = (x[col] - mean) * inv_std;
+        dst[col] = ggml_cuda_cast<T_out>((ggml_cuda_cast<float>(x[col]) - mean) * inv_std);
     }
 }
 
@@ -281,16 +282,17 @@ static __global__ void l2_norm_f32(
     }
 }
 
+template <typename T_in = float, typename T_out = float>
 static void norm_f32_cuda(
-        const float * x, float * dst, const int ncols, const int nrows, const int nchannels, const int nsamples,
+        const T_in * x, T_out * dst, const int ncols, const int nrows, const int nchannels, const int nsamples,
         const int64_t stride_row, const int64_t stride_channel, const int64_t stride_sample, const float eps, cudaStream_t stream) {
     const dim3 blocks_num(nrows, nchannels, nsamples);
     if (ncols < 1024) {
         const dim3 block_dims(WARP_SIZE, 1, 1);
-        norm_f32<WARP_SIZE><<<blocks_num, block_dims, 0, stream>>>(x, dst, ncols, stride_row, stride_channel, stride_sample, eps);
+        norm_f32<WARP_SIZE, T_in, T_out><<<blocks_num, block_dims, 0, stream>>>(x, dst, ncols, stride_row, stride_channel, stride_sample, eps);
     } else {
         const dim3 block_dims(1024, 1, 1);
-        norm_f32<1024><<<blocks_num, block_dims, block_dims.x > WARP_SIZE ? 32 * sizeof(float2): 0, stream>>>(x, dst, ncols, stride_row, stride_channel, stride_sample, eps);
+        norm_f32<1024, T_in, T_out><<<blocks_num, block_dims, block_dims.x > WARP_SIZE ? 32 * sizeof(float2): 0, stream>>>(x, dst, ncols, stride_row, stride_channel, stride_sample, eps);
     }
 }
 
@@ -440,12 +442,10 @@ static void l2_norm_f32_cuda(
 
 void ggml_cuda_op_norm(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
-    const float * src0_d = (const float *) src0->data;
-    float * dst_d = (float *) dst->data;
     cudaStream_t stream = ctx.stream();
 
-    GGML_ASSERT(src0->type == GGML_TYPE_F32);
-    GGML_ASSERT( dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16);
+    GGML_ASSERT( dst->type == GGML_TYPE_F32 ||  dst->type == GGML_TYPE_F16);
 
     GGML_TENSOR_UNARY_OP_LOCALS;
 
@@ -459,7 +459,17 @@ void ggml_cuda_op_norm(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int64_t s02 = nb02 / ts0;
     const int64_t s03 = nb03 / ts0;
 
-    norm_f32_cuda(src0_d, dst_d, ne00, ne01, ne02, ne03, s01, s02, s03, eps, stream);
+    const void * x = src0->data;
+    void       * d = dst->data;
+    if (src0->type == GGML_TYPE_F16 && dst->type == GGML_TYPE_F16) {
+        norm_f32_cuda((const half *) x, (half *) d, ne00, ne01, ne02, ne03, s01, s02, s03, eps, stream);
+    } else if (src0->type == GGML_TYPE_F16) {
+        norm_f32_cuda((const half *) x, (float *) d, ne00, ne01, ne02, ne03, s01, s02, s03, eps, stream);
+    } else if (dst->type == GGML_TYPE_F16) {
+        norm_f32_cuda((const float *) x, (half *) d, ne00, ne01, ne02, ne03, s01, s02, s03, eps, stream);
+    } else {
+        norm_f32_cuda((const float *) x, (float *) d, ne00, ne01, ne02, ne03, s01, s02, s03, eps, stream);
+    }
 }
 
 void ggml_cuda_op_group_norm(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {

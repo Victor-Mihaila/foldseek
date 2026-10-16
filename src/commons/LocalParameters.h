@@ -208,6 +208,8 @@ public:
     PARAMETER(PARAM_PDB_OUTPUT_MODE)
     PARAMETER(PARAM_PDB_OUTPUT_FORMAT)
     PARAMETER(PARAM_PROSTT5_MODEL)
+    PARAMETER(PARAM_MODERNPROST_MODEL)
+    PARAMETER(PARAM_MODERNPROST_BATCH)
     PARAMETER(PARAM_DISTANCE_THRESHOLD)
     PARAMETER(PARAM_MIN_INTERFACE_RESIDUE_PER_CHAIN)
     PARAMETER(PARAM_MULTIMER_TM_THRESHOLD)
@@ -261,6 +263,8 @@ public:
     float filtChainTmThr;
     float filtInterfaceLddtThr;
     std::string prostt5Model;
+    std::string modernprostModel;
+    int modernprostBatch;
     float distanceThreshold;
     int minResidueNum;
     int prostt5SplitLength;

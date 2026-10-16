@@ -9,6 +9,7 @@ project(foldseek C CXX)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/mmseqs/cmake")
 
 set(ENABLE_PROSTT5 1 CACHE BOOL "Enable ProstT5")
+set(ENABLE_MODERNPROST 0 CACHE BOOL "Enable ModernProst")
 set(ENABLE_CUDA 0 CACHE BOOL "Enable CUDA")
 set(ENABLE_STRUCTTY 1 CACHE BOOL "Enable StrucTTY viewer")
 set(FORCE_STATIC_DEPS 0 CACHE BOOL "Force static linking of deps")
@@ -72,7 +73,7 @@ if(HAVE_SSE2)
     set(ENABLE_PROSTT5 OFF)
 endif()
 
-if(ENABLE_PROSTT5)
+if(ENABLE_PROSTT5 OR ENABLE_MODERNPROST)
     set(CMAKE_SYSTEM_PROCESSOR_TMP ${CMAKE_SYSTEM_PROCESSOR})
     # circumvent ggml's host CPU detection
     if(ARM)
