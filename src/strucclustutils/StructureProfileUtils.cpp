@@ -155,7 +155,8 @@ ResolvedStructureProfileDbs resolveStructureProfileDbs(LocalParameters &par,
     ResolvedStructureProfileDbs resolved;
     resolved.ssInputDb = par.db1 + "_ss";
     resolved.ssTargetDb = db2NoIndexName + "_ss";
-    resolved.removeSplitTmp = false;
+    resolved.removeSplitQuery = false;
+    resolved.removeSplitTarget = false;
 
     const bool packedInput3Di12St = FileUtil::fileExists((resolved.ssInputDb + ".dbtype").c_str())
         && StructureUtil::is3Di12StDb(FileUtil::parseDbType(resolved.ssInputDb.c_str()));
@@ -172,14 +173,14 @@ ResolvedStructureProfileDbs resolveStructureProfileDbs(LocalParameters &par,
             resolved.ssInputDb = par.db4 + "_split_query_ss3di";
             resolved.ss12InputDb = par.db4 + "_split_query_ss12";
             split3Di12StDb(par.db1 + "_ss", resolved.ssInputDb, resolved.ss12InputDb, par);
-            resolved.removeSplitTmp = true;
+            resolved.removeSplitQuery = true;
         }
 
         if (packedTarget3Di12St) {
             resolved.ssTargetDb = par.db4 + "_split_target_ss3di";
             resolved.ss12TargetDb = par.db4 + "_split_target_ss12";
             split3Di12StDb(db2NoIndexName + "_ss", resolved.ssTargetDb, resolved.ss12TargetDb, par);
-            resolved.removeSplitTmp = true;
+            resolved.removeSplitTarget = true;
         }
     }
 

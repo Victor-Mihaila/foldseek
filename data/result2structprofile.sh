@@ -116,15 +116,18 @@ if [ -n "${REMOVE_LCALN}" ]; then
     "$MMSEQS" rmdb "${OUT}_lcaln" ${VERBOSITY} || true
 fi
 
-if [ -n "${REMOVE_SPLIT_TMP}" ]; then
+if [ -n "${REMOVE_SPLIT_QUERY}" ]; then
     # shellcheck disable=SC2086
     "$MMSEQS" rmdb "${INPUT_SS_DB}" ${VERBOSITY} || true
-    # shellcheck disable=SC2086
-    "$MMSEQS" rmdb "${TARGET_SS_DB}" ${VERBOSITY} || true
     if [ -n "${INPUT_SS12_DB}" ]; then
         # shellcheck disable=SC2086
         "$MMSEQS" rmdb "${INPUT_SS12_DB}" ${VERBOSITY} || true
     fi
+fi
+
+if [ -n "${REMOVE_SPLIT_TARGET}" ]; then
+    # shellcheck disable=SC2086
+    "$MMSEQS" rmdb "${TARGET_SS_DB}" ${VERBOSITY} || true
     if [ -n "${TARGET_SS12_DB}" ]; then
         # shellcheck disable=SC2086
         "$MMSEQS" rmdb "${TARGET_SS12_DB}" ${VERBOSITY} || true
