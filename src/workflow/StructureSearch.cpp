@@ -1,4 +1,5 @@
 #include <cassert>
+#include <climits>
 #include <cstdlib>
 #include "DBReader.h"
 #include "Util.h"
@@ -7,6 +8,7 @@
 #include "FileUtil.h"
 #include "LocalParameters.h"
 #include "PrefilteringIndexReader.h"
+#include "IndexTable.h"
 #include "structuresearch.sh.h"
 #include "structureiterativesearch.sh.h"
 #include "structureprofile.sh.h"
@@ -26,6 +28,30 @@ void setStructureSearchMustPassAlong(LocalParameters *p) {
     p->PARAM_MAX_SEQS.wasSet = true;
     p->PARAM_ALIGNMENT_MODE.wasSet = true;
     p->PARAM_REMOVE_TMP_FILES.wasSet = true;
+}
+
+static int iterationProfileKmerScore(LocalParameters &par, const std::string &target, const std::string &indexFile) {
+    if (par.kmerScore.values.second != INT_MAX) {
+        return INT_MAX;
+    }
+    int kmerSize = par.kmerSize;
+    if (indexFile.empty() == false) {
+        DBReader<DBKeyType> idx(indexFile.c_str(), (indexFile + ".index").c_str(), 1,
+                                DBReader<DBKeyType>::USE_INDEX | DBReader<DBKeyType>::USE_DATA);
+        idx.open(DBReader<DBKeyType>::NOSORT);
+        kmerSize = PrefilteringIndexReader::getMetadata(&idx).kmerSize;
+        idx.close();
+    } else if (kmerSize == 0) {
+        DBReader<DBKeyType> tdbr((target + "_ss").c_str(), (target + "_ss.index").c_str(), 1,
+                                 DBReader<DBKeyType>::USE_INDEX);
+        tdbr.open(DBReader<DBKeyType>::NOSORT);
+        kmerSize = IndexTable::computeKmerSize(tdbr.getAminoAcidDBSize());
+        tdbr.close();
+    }
+    if (kmerSize != 6) {
+        return INT_MAX;
+    }
+    return static_cast<int>(134.35 - (par.sensitivity * 6.15));
 }
 
 int structuresearch(int argc, const char **argv, const Command &command) {
@@ -178,14 +204,20 @@ int structuresearch(int argc, const char **argv, const Command &command) {
             program = tmpDir + "/structureiterativesearch.sh";
             FileUtil::writeFile(program, structureiterativesearch_sh, structureiterativesearch_sh_len);
         }
+        const int profileKmerScore = iterationProfileKmerScore(par, target, isIndex ? PrefilteringIndexReader::searchForIndex(target) : "");
+        const int userProfileKmerScore = par.kmerScore.values.second;
         for (int i = 0; i < par.numIterations; i++) {
             if (i == (par.numIterations - 1)) {
                 par.evalThr = originalEval;
             }
             par.addBacktrace = true;
             par.compBiasCorrectionScale = 0.15;
+            if (i >= 1) {
+                par.kmerScore.values.second = (profileKmerScore != INT_MAX) ? profileKmerScore : userProfileKmerScore;
+            }
             cmd.addVariable(std::string("PREFILTER_PAR_" + SSTR(i)).c_str(),
                             par.createParameterString(par.prefilter).c_str());
+            par.kmerScore.values.second = userProfileKmerScore;
             cmd.addVariable(std::string("UNGAPPEDPREFILTER_PAR_" + SSTR(i)).c_str(),
                             par.createParameterString(par.ungappedprefilter).c_str());
             par.compBiasCorrectionScale = 0.5;
