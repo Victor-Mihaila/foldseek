@@ -632,7 +632,10 @@ std::vector<Command> foldseekCommands = {
                 CITATION_FOLDSEEK_MULTIMER, {{"",DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, NULL}}}
 };
 
-std::vector<KmerThreshold> externalThreshold = { {Parameters::DBTYPE_AMINO_ACIDS, 7, 197.0, 11.22}};
+std::vector<KmerThreshold> externalThreshold = {
+        {Parameters::DBTYPE_AMINO_ACIDS, 7, 197.0, 11.22},
+        {Parameters::DBTYPE_HMM_PROFILE, 6, 123.55, 3.6364}
+};
 
 std::vector<DatabaseDownload> externalDownloads = {
         {
