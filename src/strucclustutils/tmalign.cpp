@@ -11,6 +11,7 @@
 #include "TMaligner.h"
 #include "LoLAlign.h"
 #include "Coordinate16.h"
+#include "LDDT.h"
 
 #ifdef OPENMP
 #include <omp.h>
@@ -27,6 +28,42 @@ bool compareHitsByScore(const Matcher::result_t &first, const Matcher::result_t 
         return first.dbLen < second.dbLen;
     }
     return first.dbKey < second.dbKey;
+}
+
+// G-score of an alignment as convertalis reports it: lDDT over aligned query residues that are not
+// lowercase (masked), times the square root of their coverage of the unmasked query.
+static float alignmentGscore(const LDDTCalculator::LDDTScoreResult &lddt, const Matcher::result_t &res,
+                             const char *querySeq) {
+    if (lddt.scoreLength <= 0) {
+        return 0.0f;
+    }
+    const std::string bt = Matcher::uncompressAlignment(res.backtrace);
+    int qPos = res.qStartPos;
+    int alignIdx = 0;
+    int filteredCount = 0;
+    float filteredLddtSum = 0.0f;
+    for (size_t k = 0; k < bt.size(); k++) {
+        if (bt[k] == 'M') {
+            if (!islower(querySeq[qPos])) {
+                filteredLddtSum += lddt.perCaLddtScore[alignIdx];
+                filteredCount++;
+            }
+            qPos++;
+            alignIdx++;
+        } else if (bt[k] == 'I') {
+            qPos++;
+        }
+    }
+    int qlenFiltered = 0;
+    for (unsigned int k = 0; k < res.qLen; k++) {
+        if (!islower(querySeq[k])) {
+            qlenFiltered++;
+        }
+    }
+    if (filteredCount == 0 || qlenFiltered == 0) {
+        return 0.0f;
+    }
+    return (filteredLddtSum / filteredCount) * sqrtf(static_cast<float>(filteredCount) / qlenFiltered);
 }
 
 int runStructureAligner(int argc, const char **argv, const Command& command, bool runLoLAlign) {
@@ -133,6 +170,11 @@ int runStructureAligner(int argc, const char **argv, const Command& command, boo
     std::vector<TMaligner *> tmaligner;
     tcoords.resize(par.threads);
 
+    // Null-pair collection (--lolalign-target-nonhomologs N): targets are aligned in prefilter
+    // order and only the first N with G-score below --lolalign-gscore-thr are written.
+    const bool collectNulls = runLoLAlign && par.lolalignTargetNonhomologs > 0;
+    std::vector<LDDTCalculator *> lddtCalculators;
+
     // The forward-backward SIMD kernel processes columns in blocks of blockLen and pads each
     // block to a multiple of VECSIZE_FLOAT. A block length that is not a multiple of VECSIZE_FLOAT
     // overruns the per-block buffers (which are sized blockLen+1), so round the requested block
@@ -142,6 +184,9 @@ int runStructureAligner(int argc, const char **argv, const Command& command, boo
     int max_targetLen = static_cast<int>(tdbr->sequenceReader->getMaxSeqLen() + 1);
     max_targetLen = ((max_targetLen + blockLen - 1) / blockLen) * blockLen;
         
+    if (collectNulls) {
+        lddtCalculators.resize(par.threads);
+    }
     if (runLoLAlign){
         lolaligner.resize(par.threads);
         fwbwAligner.resize(par.threads);
@@ -175,7 +220,12 @@ int runStructureAligner(int argc, const char **argv, const Command& command, boo
                                                 par.tmAlignFast, false, false);
         }
         tcoords[thread_idx] = new Coordinate16();
+        if (collectNulls) {
+            lddtCalculators[thread_idx] = new LDDTCalculator(qdbr.sequenceReader->getMaxSeqLen() + 1,
+                                                             tdbr->sequenceReader->getMaxSeqLen() + 1);
+        }
     }
+    std::vector<float> gscores;
 
 
     std::vector<Matcher::result_t> swResults;
@@ -228,7 +278,11 @@ int runStructureAligner(int argc, const char **argv, const Command& command, boo
             data = Util::skipLine(data);
         }
 
+        if (collectNulls && par.lolalignMaxAlignTargets > 0 && dbKeys.size() > static_cast<size_t>(par.lolalignMaxAlignTargets)) {
+            dbKeys.resize(par.lolalignMaxAlignTargets);
+        }
         swResults.resize(dbKeys.size());
+        gscores.assign(dbKeys.size(), 1.0f);
 #pragma omp parallel
         {
             unsigned int thread_idx = 0;
@@ -241,6 +295,9 @@ int runStructureAligner(int argc, const char **argv, const Command& command, boo
                 if (queryLen <= 15) {
                        lolaligner[thread_idx]->setStartAnchorLength(0);
                 }
+                if (collectNulls) {
+                    lddtCalculators[thread_idx]->initQuery(queryLen, qdata, &qdata[queryLen], &qdata[queryLen + queryLen]);
+                }
             } else {
                 tmaligner[thread_idx]->initQuery(qdata, &qdata[queryLen], &qdata[queryLen + queryLen],
                                              querySeq, queryLen);
@@ -250,8 +307,15 @@ int runStructureAligner(int argc, const char **argv, const Command& command, boo
         int rejected = 0;
         size_t chunkSize = (par.maxAccept == INT_MAX &&
                             par.maxRejected == INT_MAX  ) ? dbKeys.size() : par.threads;
+        if (collectNulls) {
+            chunkSize = static_cast<size_t>(par.threads);
+        }
+        int nonhomologs = 0;
         for (size_t chunkStart = 0; chunkStart < dbKeys.size(); chunkStart += chunkSize) {
             if (passedNum >= par.maxAccept || rejected >= par.maxRejected) {
+                break;
+            }
+            if (collectNulls && nonhomologs >= par.lolalignTargetNonhomologs) {
                 break;
             }
             size_t chunkEnd = std::min(chunkStart + chunkSize, dbKeys.size());
@@ -317,6 +381,13 @@ int runStructureAligner(int argc, const char **argv, const Command& command, boo
                                 } else {
                                     tmpResult = lolaligner[thread_idx]->align(dbKeys[i], tdata, &tdata[targetLen], &tdata[targetLen + targetLen], *tSeqAAs[thread_idx], *tSeq3Dis[thread_idx], targetLen, *subMatAA, fwbwAligner[thread_idx], par.multiDomain);
                                 }
+                                if (collectNulls && dbKeys[i] != queryKey) {
+                                    LDDTCalculator::LDDTScoreResult lddt = lddtCalculators[thread_idx]->computeLDDTScore(
+                                            targetLen, tmpResult.qStartPos, tmpResult.dbStartPos,
+                                            Matcher::uncompressAlignment(tmpResult.backtrace),
+                                            tdata, &tdata[targetLen], &tdata[targetLen + targetLen]);
+                                    gscores[i] = alignmentGscore(lddt, tmpResult, querySeq);
+                                }
                             } else {
                                 float TMscore;
                                 tmpResult = tmaligner[thread_idx]->align(dbKeys[i],
@@ -360,6 +431,15 @@ int runStructureAligner(int argc, const char **argv, const Command& command, boo
                 }
             } // end parallel
 
+            if (collectNulls) {
+                for (size_t i = chunkStart; i < chunkEnd && nonhomologs < par.lolalignTargetNonhomologs; i++) {
+                    if (dbKeys[i] != queryKey && gscores[i] < par.lolalignGscoreThr) {
+                        finalHits.push_back(swResults[i]);
+                        nonhomologs++;
+                    }
+                }
+                continue;
+            }
             for (size_t i = chunkStart; i < chunkEnd; i++) {
                 if (passedNum >= par.maxAccept || rejected >= par.maxRejected) {
                     break;
@@ -408,6 +488,9 @@ int runStructureAligner(int argc, const char **argv, const Command& command, boo
         }
         
         delete tcoords[i];
+        if (collectNulls) {
+            delete lddtCalculators[i];
+        }
     }
 
     if (sameDB == false) {

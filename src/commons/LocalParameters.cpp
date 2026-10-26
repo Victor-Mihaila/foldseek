@@ -52,6 +52,9 @@ LocalParameters::LocalParameters() :
         PARAM_INTERFACE_LDDT_THRESHOLD(PARAM_INTERFACE_LDDT_THRESHOLD_ID,"--interface-lddt-threshold", "Interface LDDT threshold", "accept alignments with a lddt > thr [0.0,1.0]",typeid(float), (void *) &filtInterfaceLddtThr, "^0(\\.[0-9]+)?|1(\\.0+)?$"),
         PARAM_MIN_ALIGNED_CHAINS(PARAM_MIN_ALIGNED_CHAINS_ID, "--min-aligned-chains", "Minimum threshold of aligned chains","save alignments with at least n chain aligned between query and target" ,typeid(int), (void *) &minAlignedChains, "^[0-9]{1}[0-9]*$"),
         PARAM_MULTIDOMAIN(PARAM_MULTIDOMAIN_ID, "--lolalign-multidomain", "MultiDomain Mode", "MultiDomain Mode LoLalign", typeid(int), (void *) &multiDomain, "^[0-1]{1}$"),
+        PARAM_LOLALIGN_TARGET_NONHOMOLOGS(PARAM_LOLALIGN_TARGET_NONHOMOLOGS_ID, "--lolalign-target-nonhomologs", "Non-homologs per query", "Null-pair collection: walk each query's targets in prefilter order and keep only the first N with G-score below --lolalign-gscore-thr (0: off, normal alignment output)", typeid(int), (void *) &lolalignTargetNonhomologs, "^[0-9]{1}[0-9]*$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_LOLALIGN_MAX_ALIGN_TARGETS(PARAM_LOLALIGN_MAX_ALIGN_TARGETS_ID, "--lolalign-max-align-targets", "Max targets aligned per query", "Null-pair collection: align at most this many targets per query (0: all)", typeid(int), (void *) &lolalignMaxAlignTargets, "^[0-9]{1}[0-9]*$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_LOLALIGN_GSCORE_THR(PARAM_LOLALIGN_GSCORE_THR_ID, "--lolalign-gscore-thr", "Non-homolog G-score threshold", "Null-pair collection: a pair is a non-homolog if its G-score (lDDT over unmasked query residues x sqrt(query coverage)) is below this", typeid(float), (void *) &lolalignGscoreThr, "^[0-9]*(\\.[0-9]+)?$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
         PARAM_SUBMAT_12ST_SCALE(PARAM_SUBMAT_12ST_SCALE_ID, "--submat-12st-scale", "12st substitution matrix scale", "Scaling factor for 12st substitution matrix", typeid(float), (void *) &submat12stScale, "^[0-9]*(\\.[0-9]+)?$"),
         PARAM_SS_12ST(PARAM_SS_12ST_ID, "--ss-12st", "Include 12-state alphabet", "Include 12-state structural alphabet in _ss database:\n0: disable\n1: enable", typeid(bool), (void *) &useAuxScoring, ""),
         PARAM_USE_REVERSE_SCORE(PARAM_USE_REVERSE_SCORE_ID, "--use-reverse-score", "Use reverse score", "Subtract reverse alignment score from forward score:\n0: disable\n1: enable", typeid(int), (void *) &useReverseScore, "^[0-1]{1}$"),
@@ -160,6 +163,9 @@ LocalParameters::LocalParameters() :
 
     //LoLalign
     lolalign.push_back(&PARAM_MULTIDOMAIN);
+    lolalign.push_back(&PARAM_LOLALIGN_TARGET_NONHOMOLOGS);
+    lolalign.push_back(&PARAM_LOLALIGN_MAX_ALIGN_TARGETS);
+    lolalign.push_back(&PARAM_LOLALIGN_GSCORE_THR);
     lolalign.push_back(&PARAM_CANDIDATE_SEEDS);
     lolalign.push_back(&PARAM_REFINE_SEEDS);
     lolalign.push_back(&PARAM_MIN_SEQ_ID);
@@ -494,6 +500,9 @@ LocalParameters::LocalParameters() :
 
     // LoLalign
     multiDomain = 1;
+    lolalignTargetNonhomologs = 0;
+    lolalignMaxAlignTargets = 0;
+    lolalignGscoreThr = 0.5;
     candidateSeeds = 10;
     refineSeeds = 3;
 

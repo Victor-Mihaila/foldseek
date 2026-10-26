@@ -217,6 +217,9 @@ public:
     PARAMETER(PARAM_INTERFACE_LDDT_THRESHOLD)
     PARAMETER(PARAM_MIN_ALIGNED_CHAINS)
     PARAMETER(PARAM_MULTIDOMAIN)
+    PARAMETER(PARAM_LOLALIGN_TARGET_NONHOMOLOGS)
+    PARAMETER(PARAM_LOLALIGN_MAX_ALIGN_TARGETS)
+    PARAMETER(PARAM_LOLALIGN_GSCORE_THR)
     PARAMETER(PARAM_VIEW_RESULTS)
     PARAMETER(PARAM_STRUCTTY_MODE)
     PARAMETER(PARAM_STRUCTTY_SS)
@@ -270,6 +273,9 @@ public:
     int prostt5SplitLength;
     int minAlignedChains;
     int multiDomain;
+    int lolalignTargetNonhomologs;
+    int lolalignMaxAlignTargets;
+    float lolalignGscoreThr;
     bool viewResults;
     int structtyMode;
     bool structtyShowStructure;
