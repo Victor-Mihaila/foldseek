@@ -33,8 +33,9 @@ EvalueNeuralNet::EvalueNeuralNet(size_t dbResidueCount,
                                  BaseMatrix* subMat,
                                  int mode,
                                  bool,
-                                 bool recoverProfileComposition)
-                                 : subMat(subMat), mode(mode), recoverProfileComposition(recoverProfileComposition) {
+                                 bool recoverProfileComposition,
+                                 const BaseMatrix *subMat12St)
+                                 : subMat(subMat), mode(mode), recoverProfileComposition(recoverProfileComposition), subMat12St(subMat12St) {
         logDbResidueCount = log(static_cast<double>(dbResidueCount));
         logDbSequenceCount = log(static_cast<double>(dbSequenceCount));
         if (usesWindowedModel()) {
@@ -112,7 +113,7 @@ int EvalueNeuralNet::predictedAlignmentLength(double score) const {
     return std::max(1, static_cast<int>(std::lround(pred)));
 }
 
-void EvalueNeuralNet::fillLegacy12StComposition(float *dst, const Sequence &seq, const char *alphabet, int alphabetSize) const {
+void EvalueNeuralNet::fillLegacy12StComposition(float *dst, const Sequence &seq, const char *alphabet, int alphabetSize, const BaseMatrix *backgroundMat) const {
     std::fill(dst, dst + alphabetSize, 0.0f);
     if (seq.L <= 0) {
         return;
@@ -126,10 +127,11 @@ void EvalueNeuralNet::fillLegacy12StComposition(float *dst, const Sequence &seq,
             const short *row = profileScores + (static_cast<size_t>(pos) * rowSize);
             float colSum = 0.0f;
             for (int aa = 0; aa < alphabetSize; ++aa) {
-                const unsigned char state = seq.subMat->aa2num[static_cast<unsigned char>(alphabet[aa])];
+                const unsigned char letter = static_cast<unsigned char>(alphabet[aa]);
+                const unsigned char state = seq.subMat->aa2num[letter];
                 float prob = 0.0f;
                 if (state < static_cast<unsigned char>(Sequence::PROFILE_AA_SIZE)) {
-                    prob = Sequence::scoreToProba(row[state], seq.subMat->pBack[state],
+                    prob = Sequence::scoreToProba(row[state], backgroundMat->pBack[backgroundMat->aa2num[letter]],
                                                   LEGACY_12ST_PROFILE_BIT_FACTOR, seq.subMat->scoreBias);
                 }
                 col[aa] = prob;
@@ -162,9 +164,11 @@ void EvalueNeuralNet::fillLegacy12StComposition(float *dst, const Sequence &seq,
 
 std::pair<double, double> EvalueNeuralNet::predictMuLambdaLegacy12St(const Sequence &seq3Di, const Sequence &seq12St) {
     std::fill(in.data_.begin(), in.data_.end(), 0.0f);
-    fillLegacy12StComposition(in.data_.data(), seq3Di, LEGACY_12ST_THREEDI_ALPHABET, LEGACY_12ST_THREEDI_ALPHABET_SIZE);
+    fillLegacy12StComposition(in.data_.data(), seq3Di, LEGACY_12ST_THREEDI_ALPHABET, LEGACY_12ST_THREEDI_ALPHABET_SIZE, seq3Di.subMat);
+    // a 12-state profile is laid out on the amino-acid matrix, but its log-odds are relative to the 12-state background
     fillLegacy12StComposition(in.data_.data() + LEGACY_12ST_THREEDI_ALPHABET_SIZE,
-                              seq12St, LEGACY_12ST_ALPHABET, LEGACY_12ST_ALPHABET_SIZE);
+                              seq12St, LEGACY_12ST_ALPHABET, LEGACY_12ST_ALPHABET_SIZE,
+                              subMat12St != NULL ? subMat12St : seq12St.subMat);
     in.data_[LEGACY_12ST_FEATURE_SIZE - 1] = static_cast<float>(seq3Di.L);
     encoder.Apply(&in, &out);
     return std::make_pair(out.data_[0] * LEGACY_12ST_LAMBDA_STD + LEGACY_12ST_LAMBDA_MEAN,
