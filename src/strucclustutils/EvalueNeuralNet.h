@@ -4,6 +4,7 @@
 
 #ifndef FOLDSEEK_EVALUENEURALNET_H
 #define FOLDSEEK_EVALUENEURALNET_H
+#include <algorithm>
 #include <cmath>
 #include <vector>
 #include "kerasify/keras_model.h"
@@ -17,8 +18,15 @@ private:
     static constexpr double WINDOWED_EVALUE_CORR_EXPONENT = 0.8559494682342873;
     static constexpr double WINDOWED_EVALUE_CORR_SCALE = 0.13415799519899208;
     static constexpr double LEGACY_EVALUE_CORR_EXPONENT = 0.32;
-    static constexpr double LEGACY_12ST_EVALUE_CORR_EXPONENT = 1.0;
-    static constexpr double LEGACY_12ST_EVALUE_CORR_SCALE = 0.25;
+    // mode 2: E = scale * N * sqrt(p_q * p_t) * exp(f(u) - f(u_ref)), f(u) = c1 u + c2 u^2, u = log of the shorter of query and
+    // target length clipped to [min, max], u_ref = log(ref); scale is the multiplier when the shorter protein has the reference
+    // length. p_q, p_t come from the query's and the target's own mu/lambda (p_q alone if the target has none)
+    static constexpr double LEGACY_12ST_EVALUE_CORR_SCALE = 0.1357792528025477;
+    static constexpr double LEGACY_12ST_LENGTH_REF = 150.0;
+    static constexpr double LEGACY_12ST_LENGTH_C1 = -1.8318504160819078;
+    static constexpr double LEGACY_12ST_LENGTH_C2 = 0.45780993271377185;
+    static constexpr double LEGACY_12ST_LENGTH_MIN = 60.0;
+    static constexpr double LEGACY_12ST_LENGTH_MAX = 400.0;
     static constexpr double WINDOWED_PRED_SLOPE = 0.5142189860343933;
     static constexpr double WINDOWED_PRED_INTERCEPT = 35.95916748046875;
     static constexpr double WINDOWED_MIN_LAMBDA = 9.999999747378752e-05;
@@ -34,6 +42,7 @@ private:
     double logDbSequenceCount;
     int mode;
     bool recoverProfileComposition;
+    const BaseMatrix *subMat12St;
     KerasModel encoder;
     Tensor in;
     Tensor out;
@@ -46,7 +55,7 @@ private:
 
     static float softplus(float x);
     int predictedAlignmentLength(double score) const;
-    void fillLegacy12StComposition(float *dst, const Sequence &seq, const char *alphabet, int alphabetSize) const;
+    void fillLegacy12StComposition(float *dst, const Sequence &seq, const char *alphabet, int alphabetSize, const BaseMatrix *backgroundMat) const;
     std::pair<double, double> predictMuLambdaLegacy12St(const Sequence &seq3Di, const Sequence &seq12St);
     void fillWindowedComposition(float *dst, const unsigned char *seq, unsigned int seqLen, int end1Based, int spanLen) const;
     void fillWindowedComposition(float *dst, const Sequence &seq, int end1Based, int spanLen) const;
@@ -69,7 +78,8 @@ public:
                     BaseMatrix* subMat,
                     int mode = LocalParameters::EVALUE_NN_MODE_LEGACY,
                     bool legacyUses12St = false,
-                    bool recoverProfileComposition = false);
+                    bool recoverProfileComposition = false,
+                    const BaseMatrix *subMat12St = NULL);
 
     std::pair<double, double> predictMuLambda(const unsigned char * seq, unsigned int L);
     std::pair<double, double> predictMuLambda(const Sequence &seq);
@@ -105,15 +115,24 @@ public:
         return exp(computePvalue(score, lambda_, mu) + activeLogDbCount());
     }
     
-    double computeEvalueCorr(double score, double lambda_, double mu){
-	double logPVal = computePvalue(score, lambda_, mu);    
+    double computeEvalueCorr(double score, double lambda_, double mu,
+                             unsigned int queryLen, unsigned int targetLen,
+                             const std::pair<double, double> *targetMuLambda = NULL){
+	double logPVal = computePvalue(score, lambda_, mu);
+        if (usesLegacy12StModel() && targetMuLambda != NULL) {
+            logPVal = 0.5 * (logPVal + computePvalue(score, targetMuLambda->first, targetMuLambda->second));
+        }
 	double dbSizeTimesLogPVal = logPVal + activeLogDbCount();
 	double evalue = exp(dbSizeTimesLogPVal);
         if (usesWindowedModel()) {
             return WINDOWED_EVALUE_CORR_SCALE * pow(evalue, WINDOWED_EVALUE_CORR_EXPONENT);
         }
         if (usesLegacy12StModel()) {
-            return LEGACY_12ST_EVALUE_CORR_SCALE * pow(evalue, LEGACY_12ST_EVALUE_CORR_EXPONENT);
+            double u = log(std::min(std::max(static_cast<double>(std::min(queryLen, targetLen)), LEGACY_12ST_LENGTH_MIN), LEGACY_12ST_LENGTH_MAX));
+            double uRef = log(LEGACY_12ST_LENGTH_REF);
+            double logLengthFactor = (LEGACY_12ST_LENGTH_C2 * u + LEGACY_12ST_LENGTH_C1) * u
+                                   - (LEGACY_12ST_LENGTH_C2 * uRef + LEGACY_12ST_LENGTH_C1) * uRef;
+            return LEGACY_12ST_EVALUE_CORR_SCALE * evalue * exp(logLengthFactor);
         }
 	double corrEvalue = pow(evalue, LEGACY_EVALUE_CORR_EXPONENT);
         return corrEvalue;

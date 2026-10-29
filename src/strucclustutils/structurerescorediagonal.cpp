@@ -55,7 +55,8 @@ static DistanceCalculator::LocalAlignment ungappedAlignment(const T *seq3Di1,
 Matcher::result_t ungappedAlignStructure(Sequence & qSeqAA, Sequence & qSeq3Di, Sequence & qRevSeqAA, Sequence & qRevSeq3Di,
                                          Sequence & tSeqAA, Sequence & tSeq3Di, int diagonal, SubstitutionMatrix & subAAMat,
                                          SubstitutionMatrix & sub3DiMat, EvalueNeuralNet & evaluer,
-                                         std::pair<double, double> queryMuLambda, std::string & backtrace, Parameters & par) {
+                                         std::pair<double, double> queryMuLambda, const std::pair<double, double> *targetMuLambda,
+                                         std::string & backtrace, Parameters & par) {
     DistanceCalculator::LocalAlignment res;
     float seqId = 0.0;
     int32_t score = 0;
@@ -131,7 +132,7 @@ Matcher::result_t ungappedAlignStructure(Sequence & qSeqAA, Sequence & qSeq3Di, 
                                            tSeq3Di, dbEndPos + 1,
                                            score);
     }
-    double evalue = evaluer.computeEvalueCorr(score, muLambda.first, muLambda.second);
+    double evalue = evaluer.computeEvalueCorr(score, muLambda.first, muLambda.second, qSeqAA.L, tSeqAA.L, targetMuLambda);
     unsigned int alnLength = Matcher::computeAlnLength(qStartPos, qEndPos, dbStartPos, dbEndPos);
     if (par.addBacktrace) {
         backtrace.append(alnLength, 'M');
@@ -310,7 +311,8 @@ int structureungappedalign(int argc, const char **argv, const Command& command) 
                                 &subMat3Di,
                                 par.evalueNNMode,
                                 use12StScoring,
-                                par.evalue12StProfileComp != 0);
+                                par.evalue12StProfileComp != 0,
+                                subMat12St);
         std::vector<Matcher::result_t> alignmentResult;
         StructureSmithWaterman structureSmithWaterman(par.maxSeqLen, subMat3Di.alphabetSize, par.compBiasCorrection, par.compBiasCorrectionScale, NULL, NULL);
         StructureSmithWaterman reverseStructureSmithWaterman(par.maxSeqLen, subMat3Di.alphabetSize, par.compBiasCorrection, par.compBiasCorrectionScale, NULL, NULL);
@@ -341,7 +343,7 @@ int structureungappedalign(int argc, const char **argv, const Command& command) 
         if (target3Di12St) {
             tSeq3Di21Buf.reserve(par.maxSeqLen);
             tSeq12StBuf.reserve(par.maxSeqLen);
-            if (use12StScoring) {
+            if (use12StScoring || use12StEvalue) {
                 tSeq12St.reset(new Sequence(par.maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, (const BaseMatrix *) subMat12St, 0, false, par.compBiasCorrection));
             }
         }
@@ -443,7 +445,7 @@ int structureungappedalign(int argc, const char **argv, const Command& command) 
                     if (target3Di12St) {
                         StructureUtil::split3Di12St(targetSeq3Di, targetSeqLen, tSeq3Di21Buf, tSeq12StBuf, subMat3Di, *subMat12St);
                         targetSeq3Di21 = tSeq3Di21Buf.data();
-                        if (use12StScoring) {
+                        if (use12StScoring || use12StEvalue) {
                             tSeq12St->mapSequence(targetId, dbKey, tSeq12StBuf.data(), targetSeqLen);
                         }
                     }
@@ -453,7 +455,13 @@ int structureungappedalign(int argc, const char **argv, const Command& command) 
                         rejected++;
                         continue;
                     }
-                    Matcher::result_t res = ungappedAlignStructure(qSeqAA, qSeq3Di, qRevSeqAA, qRevSeq3Di, tSeqAA, tSeq3Di, static_cast<short>(prefHit.diagonal), subMatAA, subMat3Di, evaluer, muLambda, backtrace, par);
+                    std::pair<double, double> targetMuLambda;
+                    const std::pair<double, double> *targetMuLambdaPtr = NULL;
+                    if (evaluer.usesLegacy12StModel() && tSeq12St) {
+                        targetMuLambda = evaluer.predictMuLambda(tSeq3Di, *tSeq12St);
+                        targetMuLambdaPtr = &targetMuLambda;
+                    }
+                    Matcher::result_t res = ungappedAlignStructure(qSeqAA, qSeq3Di, qRevSeqAA, qRevSeq3Di, tSeqAA, tSeq3Di, static_cast<short>(prefHit.diagonal), subMatAA, subMat3Di, evaluer, muLambda, targetMuLambdaPtr, backtrace, par);
 
                     if(res.dbKey == UINT_MAX){
                         rejected++;

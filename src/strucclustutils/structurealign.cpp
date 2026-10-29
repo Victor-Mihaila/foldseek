@@ -63,6 +63,7 @@ int alignStructure(StructureSmithWaterman & structureSmithWaterman,
                    Sequence * tSeq12St,
                    unsigned int querySeqLen, unsigned int targetSeqLen,
                    EvalueNeuralNet & evaluer, std::pair<double, double> queryMuLambda,
+                   const std::pair<double, double> *targetMuLambda,
                    Matcher::result_t & res, std::string & backtrace,
                    Parameters & par, bool useReverseScore) {
 
@@ -94,7 +95,7 @@ int alignStructure(StructureSmithWaterman & structureSmithWaterman,
                                            align.score1);
     }
     // we can already stop if this e-value isn't good enough, it wont be any better in the next step
-    align.evalue = evaluer.computeEvalueCorr(align.score1, muLambda.first, muLambda.second);
+    align.evalue = evaluer.computeEvalueCorr(align.score1, muLambda.first, muLambda.second, querySeqLen, targetSeqLen, targetMuLambda);
     bool hasLowerEvalue = align.evalue > par.evalThr;
     if(hasLowerEvalue){
         return -1;
@@ -117,7 +118,7 @@ int alignStructure(StructureSmithWaterman & structureSmithWaterman,
                                            tSeq3Di, align.dbEndPos1 + 1,
                                            score);
     }
-    align.evalue = evaluer.computeEvalueCorr(score, muLambda.first, muLambda.second);
+    align.evalue = evaluer.computeEvalueCorr(score, muLambda.first, muLambda.second, querySeqLen, targetSeqLen, targetMuLambda);
     hasLowerEvalue = align.evalue > par.evalThr;
     if (hasLowerEvalue) {
         return -1;
@@ -181,6 +182,7 @@ int computeAlternativeAlignment(StructureSmithWaterman & structureSmithWaterman,
                                 Sequence * tSeq12St,
                                 unsigned int querySeqLen, unsigned int targetSeqLen,
                                 EvalueNeuralNet & evaluer, std::pair<double, double> queryMuLambda,
+                                const std::pair<double, double> *targetMuLambda,
                                 Matcher::result_t & result, Matcher::result_t & altRes,
                                 std::string & backtrace, Parameters & par, bool useReverseScore) {
     const unsigned char xAAIndex = tSeqAA.subMat->aa2num[static_cast<int>('X')];
@@ -195,7 +197,7 @@ int computeAlternativeAlignment(StructureSmithWaterman & structureSmithWaterman,
     if (alignStructure(structureSmithWaterman, reverseStructureSmithWaterman,
                        qSeq3Di,
                        tSeqAA, tSeq3Di, tSeq12St, querySeqLen, targetSeqLen,
-                       evaluer, queryMuLambda, altRes, backtrace, par, useReverseScore) == -1) {
+                       evaluer, queryMuLambda, targetMuLambda, altRes, backtrace, par, useReverseScore) == -1) {
         return -1;
     }
     if (Alignment::checkCriteria(altRes, false, par.evalThr, par.seqIdThr, par.alnLenThr, par.covMode, par.covThr)) {
@@ -396,7 +398,8 @@ int structurealign(int argc, const char **argv, const Command& command) {
                                 &subMat3Di,
                                 par.evalueNNMode,
                                 use12StScoring,
-                                par.evalue12StProfileComp != 0);
+                                par.evalue12StProfileComp != 0,
+                                subMat12St);
         std::vector<Matcher::result_t> alignmentResult;
         StructureSmithWaterman structureSmithWaterman(par.maxSeqLen, subMat3Di.alphabetSize, par.compBiasCorrection, par.compBiasCorrectionScale, &subMatAA, &subMat3Di);
         StructureSmithWaterman reverseStructureSmithWaterman(par.maxSeqLen, subMat3Di.alphabetSize, par.compBiasCorrection, par.compBiasCorrectionScale, &subMatAA, &subMat3Di);
@@ -455,7 +458,7 @@ int structurealign(int argc, const char **argv, const Command& command) {
         if (target3Di12St) {
             tSeq3Di21Buf.reserve(par.maxSeqLen);
             tSeq12StBuf.reserve(par.maxSeqLen);
-            if (use12StScoring) {
+            if (use12StScoring || use12StEvalue) {
                 const BaseMatrix *t12StMat = query12StProfileLayout
                     ? static_cast<const BaseMatrix *>(&subMatAA)
                     : static_cast<const BaseMatrix *>(subMat12St);
@@ -583,7 +586,7 @@ int structurealign(int argc, const char **argv, const Command& command) {
                     if (target3Di12St) {
                         StructureUtil::split3Di12St(targetSeq3Di, targetSeqLen, tSeq3Di21Buf, tSeq12StBuf, subMat3Di, *subMat12St);
                         targetSeq3Di21 = tSeq3Di21Buf.data();
-                        if (use12StScoring) {
+                        if (use12StScoring || use12StEvalue) {
                             tSeq12St->mapSequence(targetId, dbKey, tSeq12StBuf.data(), targetSeqLen);
                         }
                     }
@@ -592,6 +595,12 @@ int structurealign(int argc, const char **argv, const Command& command) {
                     if(Util::canBeCovered(par.covThr, par.covMode, qSeq3Di.L, targetSeqLen) == false){
                         rejected++;
                         continue;
+                    }
+                    std::pair<double, double> targetMuLambda;
+                    const std::pair<double, double> *targetMuLambdaPtr = NULL;
+                    if (evaluer.usesLegacy12StModel() && tSeq12St) {
+                        targetMuLambda = evaluer.predictMuLambda(tSeq3Di, *tSeq12St);
+                        targetMuLambdaPtr = &targetMuLambda;
                     }
                     if (use12StScoring && structureSmithWaterman.isProfileSearch() && passedNum == 0) {
                         TRACE_STRUCTURE("[trace] first target qKey=%u tKey=%u qLen=%u tLen=%d t12Len=%d t12First=%d\n",
@@ -604,7 +613,7 @@ int structurealign(int argc, const char **argv, const Command& command) {
                                       qSeq3Di,
                                       tSeqAA, tSeq3Di, use12StScoring ? tSeq12St.get() : NULL,
                                       querySeqLen, targetSeqLen,
-                                      evaluer, muLambda, res, backtrace, par, par.useReverseScore) == -1){
+                                      evaluer, muLambda, targetMuLambdaPtr, res, backtrace, par, par.useReverseScore) == -1){
                         rejected++;
                         continue;
                     }
@@ -656,7 +665,7 @@ int structurealign(int argc, const char **argv, const Command& command) {
                                                            qSeq3Di,
                                                            tSeqAA, tSeq3Di, use12StScoring ? tSeq12St.get() : NULL,
                                                            querySeqLen, targetSeqLen,
-                                                           evaluer, muLambda, res, altRes,
+                                                           evaluer, muLambda, targetMuLambdaPtr, res, altRes,
                                                            backtrace, par, par.useReverseScore) == -1) {
                                 moreAltAli = false;
                                 continue;
