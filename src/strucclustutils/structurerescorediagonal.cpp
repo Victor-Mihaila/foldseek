@@ -198,6 +198,10 @@ int structureungappedalign(int argc, const char **argv, const Command& command) 
         Debug(Debug::ERROR) << "--evalue-nn-mode 2 requires a query 12-state alphabet in the packed _ss DB or a _ss12 DB\n";
         EXIT(EXIT_FAILURE);
     }
+    if (use12StEvalue && !target3Di12St) {
+        Debug(Debug::ERROR) << "--evalue-nn-mode 2 requires a target 12-state alphabet in the packed _ss DB\n";
+        EXIT(EXIT_FAILURE);
+    }
 
     bool needTMaligner = (par.tmScoreThr > 0);
     bool needLDDT = (par.lddtThr > 0);
