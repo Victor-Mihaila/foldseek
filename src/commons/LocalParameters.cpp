@@ -403,6 +403,8 @@ LocalParameters::LocalParameters() :
     easymultimersearchworkflow = combineList(easymultimersearchworkflow, convertalignments);
     easymultimersearchworkflow = combineList(easymultimersearchworkflow, createmultimerreport);
     easymultimersearchworkflow = removeParameter(easymultimersearchworkflow, PARAM_PROSTT5_MODEL);
+    easymultimersearchworkflow = removeParameter(easymultimersearchworkflow, PARAM_MODERNPROST_MODEL);
+    easymultimersearchworkflow = removeParameter(easymultimersearchworkflow, PARAM_MODERNPROST_BATCH);
 #ifdef HAVE_STRUCTTY
     easymultimersearchworkflow.push_back(&PARAM_VIEW_RESULTS);
     easymultimersearchworkflow.push_back(&PARAM_STRUCTTY_MODE);

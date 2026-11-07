@@ -139,6 +139,7 @@ int easystructuresearch(int argc, const char **argv, const Command &command) {
 
     cmd.addVariable("CREATEDB_QUERY_PAR", par.createParameterString(par.structurecreatedb).c_str());
     par.prostt5Model = "";
+    par.modernprostModel = "";
     cmd.addVariable("CREATEDB_PAR", par.createParameterString(par.structurecreatedb).c_str());
     cmd.addVariable("CONVERT_PAR", par.createParameterString(par.convertalignments).c_str());
     const std::string userOutfmt = par.outfmt;
