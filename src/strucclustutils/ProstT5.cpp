@@ -308,7 +308,7 @@ std::vector<std::string> ProstT5::getDevices() {
         std::string name = ggml_backend_dev_name(dev);
         std::string description = ggml_backend_dev_description(dev);
         // ignore Metal in CI
-        if (name == "Metal" && description.find("Paravirtual") != std::string::npos) {
+        if (isMetalDevice(name) && description.find("Paravirtual") != std::string::npos) {
             continue;
         }
         devices.push_back(name);

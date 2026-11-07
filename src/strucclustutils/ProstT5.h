@@ -60,6 +60,8 @@ public:
     ~ProstT5();
 
     static std::vector<std::string> getDevices();
+    // ggml names the Metal device "MTL<n>" ("Metal" in older ggml)
+    static bool isMetalDevice(const std::string& name) { return name.compare(0, 3, "MTL") == 0 || name == "Metal"; }
 
     std::string predict(const std::string& aa);
     void perf();

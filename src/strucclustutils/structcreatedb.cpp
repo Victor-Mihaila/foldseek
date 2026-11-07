@@ -745,10 +745,11 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
             }
         } else {
             for (size_t i = 0; i < devices.size(); i++) {
-                if (devices[i] == "Metal") {
+                if (ProstT5::isMetalDevice(devices[i])) {
                     par.gpu = 1;
+                    const std::string metal = devices[i];
                     devices.clear();
-                    devices.push_back("Metal");
+                    devices.push_back(metal);
                     break;
                 }
             }
