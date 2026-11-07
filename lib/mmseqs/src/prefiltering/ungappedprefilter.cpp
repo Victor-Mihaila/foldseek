@@ -34,6 +34,11 @@
 #include <signal.h>
 #endif
 
+// How many primary-ranked hits get the aux channel added. A fixed pool rather than a multiple
+// of --max-seqs: --max-seqs is what the user wants written out, while this is an internal recall
+// budget, and tying them together grows the pool whenever more output is requested.
+static const size_t AUX_RESCORE_TOP_N = 100000;
+
 #ifdef HAVE_CUDA
 
 volatile sig_atomic_t keepRunningClient = 1;
@@ -71,7 +76,7 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
                               << "(12-state channel disabled, or query DB has none)\n";
     }
     const size_t topN = have12StQuery
-        ? std::min(tdbr->getSize(), (size_t)std::max(1, par.gpuRescoreTopkMult) * par.maxResListLen)
+        ? std::min(tdbr->getSize(), AUX_RESCORE_TOP_N)
         : par.maxResListLen;
 
     const size_t batchMax = (par.gpuServer == 0) ? 32 : 1;
@@ -93,15 +98,10 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
     results.reserve(batchMax * topN);
     std::vector<hit_t> shortResults;
     std::vector<Matcher::result_t> resultsAln;
-    Masker *queryMasker = have12StQuery ? new Masker(*subMat) : NULL;
-    const char *noProfileMaskEnv = std::getenv("FOLDSEEK_NO_PROFILE_MASK");
-    const bool maskProfileQueries = isProfileQuery && packedTarget && par.maskNrepeats > 0
-        && !(noProfileMaskEnv != NULL && noProfileMaskEnv[0] != '\0' && noProfileMaskEnv[0] != '0');
-    Masker *profileMasker = maskProfileQueries ? new Masker(*subMat) : NULL;
-    const unsigned char x12St = have12StQuery ? subMat12St->aa2num[static_cast<int>('X')] : 0;
     const unsigned char x3Di = subMat->aa2num[static_cast<int>('X')];
     const int MARV_MAX_MASK_THRESHOLD = 511;
-    int maskThreshold = (par.maskNrepeats > 0) ? par.maskNrepeats : MARV_MAX_MASK_THRESHOLD;
+    // Masker::maskRepeats masks runs longer than --mask-n-repeat, libmarv masks runs of at least maskThreshold
+    int maskThreshold = (par.maskNrepeats > 0) ? par.maskNrepeats + 1 : MARV_MAX_MASK_THRESHOLD;
     if (maskThreshold > MARV_MAX_MASK_THRESHOLD) {
         Debug(Debug::WARNING) << "--mask-n-repeat " << maskThreshold << " exceeds the GPU limit; "
                               << "clamping to " << MARV_MAX_MASK_THRESHOLD << "\n";
@@ -243,18 +243,6 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
             batchProfileBuf[slot].assign(qSeq.profile_for_alignment,
                                          qSeq.profile_for_alignment + (size_t)subMat->alphabetSize * (size_t)qSeq.L);
             profile = batchProfileBuf[slot].data();
-            if (profileMasker != NULL) {
-                profileMasker->maskSequence(qSeq,  false, par.maskProb,
-                                             false, par.maskNrepeats);
-                const unsigned char xNum = (unsigned char) profileMasker->maskLetterNum;
-                for (int i = 0; i < qSeq.L; ++i) {
-                    if (qSeq.numSequence[i] == xNum) {
-                        for (size_t j = 0; j < (size_t)subMat->alphabetSize; ++j) {
-                            profile[j * qSeq.L + i] = 0;
-                        }
-                    }
-                }
-            }
             if (q12StProfileDbr != NULL) {
                 const size_t id12 = q12StProfileDbr->getId(queryKey);
                 if (id12 != DB_ENTRY_NOT_FOUND) {
@@ -273,15 +261,6 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
                 }
             }
         } else {
-            if (have12StQuery) {
-                queryMasker->maskSequence(qSeq,  false, par.maskProb,
-                                           false, par.maskNrepeats);
-                for (int i = 0; i < qSeq.L; ++i) {
-                    if (qSeq.numSequence[i] == (unsigned char)queryMasker->maskLetterNum) {
-                        qSeq.numSequenceAux[i] = x12St;
-                    }
-                }
-            }
             batchProfileBuf[slot].resize((size_t)subMat->alphabetSize * (size_t)qSeq.L);
             profile = batchProfileBuf[slot].data();
             if (compositionBias != NULL) {
@@ -480,12 +459,6 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
     if (compositionBias != NULL) {
         free(compositionBias);
     }
-    if (profileMasker != NULL) {
-        delete profileMasker;
-    }
-    if (queryMasker != NULL) {
-        delete queryMasker;
-    }
     if (q12StProfileDbr != NULL) {
         q12StProfileDbr->close();
         delete q12StProfileDbr;
@@ -493,11 +466,6 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
     }
 }
 #endif
-
-// How many primary-ranked hits get the aux channel added. A fixed pool rather than a multiple
-// of --max-seqs: --max-seqs is what the user wants written out, while this is an internal recall
-// budget, and tying them together grows the pool whenever more output is requested.
-static const size_t AUX_RESCORE_TOP_N = 100000;
 
 static int scoreAuxOnDiagonal(const unsigned char *qAux, int qLen,
                                const unsigned char *tAux, int tLen,
@@ -553,10 +521,6 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
                            << "scoring the primary alphabet only\n";
     }
     const size_t topNAux = useAux ? AUX_RESCORE_TOP_N : 0;
-    // 'X' in the aux matrix: its row and column are all zeros, so a masked position
-    // scores 0 against anything.
-    const unsigned char auxMaskNum = (subMatAux != NULL)
-            ? (unsigned char)subMatAux->aa2num[(int)'X'] : 0;
     size_t rescoreCount = 0;
 #ifdef OPENMP
     omp_set_nested(1);
@@ -575,9 +539,9 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
         SmithWaterman aligner(par.maxSeqLen, subMat->alphabetSize,
                               par.compBiasCorrection, par.compBiasCorrectionScale, NULL);
         // A packed DB carries no mask of its own -- masking it at write time would destroy the
-        // states the aligner reads back -- so the primary channel is repeat-masked here, per
-        // sequence, the same way the GPU kernel masks it. Only repeats: tantan and the lowercase
-        // test are both meaningless on a packed byte.
+        // states the aligner reads back -- so the primary channel of each target is repeat-masked
+        // here, the same way the GPU kernel masks it. Queries are not masked. Only repeats: tantan
+        // and the lowercase test are both meaningless on a packed byte.
         Masker masker(*subMat);
         const bool maskPacked = (par.maskNrepeats > 0) && targetHasAux;
 
@@ -589,17 +553,6 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
             unsigned int querySeqLen = qdbr->getSeqLen(id);
 
             qSeq.mapSequence(id, queryKey, querySeqData, querySeqLen);
-            if (maskPacked && queryHasAux && qSeq.numSequenceAux != NULL) {
-                masker.maskSequence(qSeq, false, par.maskProb, false, par.maskNrepeats);
-                // The GPU folds the query mask into both profiles, so a masked query position
-                // contributes on neither channel. auxMaskNum indexes the aux matrix' X row,
-                // which is all zeros, i.e. exactly the zeroed PSSM column the kernel uses.
-                for (int i = 0; i < qSeq.L; i++) {
-                    if (qSeq.numSequence[i] == (unsigned char)masker.maskLetterNum) {
-                        qSeq.numSequenceAux[i] = auxMaskNum;
-                    }
-                }
-            }
 //            qSeq.printProfileStatePSSM();
             if(Parameters::isEqualDbtype(qSeq.getSeqType(), Parameters::DBTYPE_HMM_PROFILE) ){
                 aligner.ssw_init(&qSeq, qSeq.getAlignmentProfile(), subMat);
@@ -659,6 +612,11 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
                         score = aligner.ungapped_alignment(tSeq.numSequence, tSeq.L, bestPrimaryDiagonal);
                     } else {
                         score = aligner.ungapped_alignment(tSeq.numSequence, tSeq.L);
+                    }
+                    // the byte-wise scan saturates; on packed targets, recompute those pairs exactly, as the GPU
+                    // reports them, so both return the same hits
+                    if (targetHasAux && score >= aligner.ungappedSaturationScore()) {
+                        score = aligner.ungapped_alignment_exact(tSeq.numSequence, tSeq.L, bestPrimaryDiagonal);
                     }
                 } else {
                     std::string backtrace;

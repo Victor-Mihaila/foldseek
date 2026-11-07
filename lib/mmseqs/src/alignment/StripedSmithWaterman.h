@@ -201,9 +201,10 @@ public:
    identical to the 2-argument form -- use that one whenever the diagonal is not needed, so the
    hot path stays untouched.
 
+   Ties go to the cell with the smallest db position, then the smallest query position.
    Note the score saturates at 255 - profile->bias (the accumulator is unsigned 8-bit), so on
    strongly matching pairs several diagonals can reach the ceiling; the reported one is then the
-   first to get there rather than the true argmax.
+   first to get there rather than the true argmax (ungapped_alignment_exact gives both exactly).
 
    @param	db_sequence	target sequence in numeric encoding
    @param	db_length	length of the target sequence
@@ -213,6 +214,21 @@ public:
    int ungapped_alignment(const unsigned char *db_sequence,
                           int32_t db_length,
                           int &bestDiagonal);
+
+  /*!	@function	Exact ungapped score and diagonal, computed with plain integers, for pairs whose
+   byte score reached ungappedSaturationScore(). Ties go to the cell with the smallest db position,
+   then the smallest query position, the same rule as the tracked diagonal above.
+   @param	db_sequence	target sequence in numeric encoding
+   @param	db_length	length of the target sequence
+   @param	bestDiagonal	out: diagonal of the best-scoring cell (0 when the score is 0)
+   @return	max diagonal score
+   */
+   int ungapped_alignment_exact(const unsigned char *db_sequence,
+                                int32_t db_length,
+                                int &bestDiagonal);
+
+   // score at which the byte-wise ungapped_alignment saturates for the current query profile
+   int ungappedSaturationScore() const;
 
   /*!	@function	Create the query profile using the query sequence.
    @param	read	pointer to the query sequence; the query sequence needs to be numbers

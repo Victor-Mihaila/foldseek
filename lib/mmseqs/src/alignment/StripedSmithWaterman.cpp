@@ -33,6 +33,8 @@
 #include "Debug.h"
 #include "block_aligner.h"
 #include <iostream>
+#include <vector>
+#include <algorithm>
 
 #define MAX_SIZE 4096
 
@@ -1825,6 +1827,35 @@ int SmithWaterman::ungapped_alignment(const unsigned char *db_sequence, int32_t 
     return ungapped_alignment_impl<true>(db_sequence, db_length, &bestDiagonal);
 }
 
+int SmithWaterman::ungappedSaturationScore() const {
+    return 255 - profile->bias;
+}
+
+int SmithWaterman::ungapped_alignment_exact(const unsigned char *db_sequence, int32_t db_length,
+                                            int &bestDiagonal) {
+    const int queryLength = profile->query_length;
+    std::vector<int> prev(queryLength + 1, 0);
+    std::vector<int> curr(queryLength + 1, 0);
+    int best = 0;
+    bestDiagonal = 0;
+    for (int j = 0; j < db_length; j++) {
+        const int nt = db_sequence[j];
+        for (int i = 0; i < queryLength; i++) {
+            const int subst = profile->isProfile
+                    ? profile->mat[nt * queryLength + i]
+                    : profile->mat[nt * profile->alphabetSize + profile->query_sequence[i]] + profile->composition_bias[i];
+            const int score = std::max(prev[i] + subst, 0);
+            curr[i + 1] = score;
+            if (score > best) {
+                best = score;
+                bestDiagonal = i - j;
+            }
+        }
+        std::swap(prev, curr);
+    }
+    return best;
+}
+
 template <bool TrackDiagonal>
 int SmithWaterman::ungapped_alignment_impl(const unsigned char *db_sequence, int32_t db_length,
                                            int *bestDiagonalOut) {
@@ -1890,16 +1921,18 @@ int SmithWaterman::ungapped_alignment_impl(const unsigned char *db_sequence, int
             if (columnBest > trackedBest) {
                 trackedBest = columnBest;
                 const unsigned char *cells = (const unsigned char *) s_curr;
-                for (int band = 0; band < W; band++) {
-                    for (int lane = 0; lane < element_count; lane++) {
-                        // striped layout: query position = band + lane * W (createQueryProfile)
+                // striped layout: query position = band + lane * W (createQueryProfile), so lane-major
+                // order visits query positions in ascending order; take the smallest holding the column best
+                bool found = false;
+                for (int lane = 0; lane < element_count && found == false; lane++) {
+                    for (int band = 0; band < W; band++) {
                         const int queryPos = band + lane * W;
                         if (queryPos >= profile->query_length) {
-                            continue;  // padded lanes, never the real maximum
+                            break;  // padded lanes, never the real maximum
                         }
                         if ((int) cells[band * element_count + lane] == columnBest) {
                             trackedDiagonal = queryPos - j;
-                            band = W;  // break out of both loops
+                            found = true;
                             break;
                         }
                     }
