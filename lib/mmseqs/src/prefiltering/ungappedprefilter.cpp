@@ -1,4 +1,3 @@
-#include <cstdlib>
 //
 // Created by Martin Steinegger on 17.09.18.
 //
@@ -34,6 +33,36 @@
 #include <signal.h>
 #endif
 
+// libmarv masks 3Di runs of at least this length at most
+static const int MARV_MAX_MASK_THRESHOLD = 16;
+static const int AUX_STATE_CNT = 12;
+
+// 12-state score table of a query, AUX_STATE_CNT rows (target state) x qLen columns (query position), the layout of
+// libmarv's 12-state PSSM: from the 12-state matrix for a sequence query, from its 12-state profile for a profile
+// query. Returns false, leaving zeros, if a profile query has no 12-state profile of its length.
+static bool fillAuxTable(std::vector<int8_t> &table, const Sequence &qSeq, DBKeyType queryKey, BaseMatrix *subMatAux,
+                         DBReader<DBKeyType> *q12StProfileDbr, Sequence *seq12St, unsigned int thread_idx) {
+    table.assign((size_t)AUX_STATE_CNT * qSeq.L, 0);
+    if (q12StProfileDbr != NULL) {
+        const size_t id12 = q12StProfileDbr->getId(queryKey);
+        if (id12 == DB_ENTRY_NOT_FOUND) {
+            return false;
+        }
+        seq12St->mapSequence(id12, queryKey, q12StProfileDbr->getData(id12, thread_idx), q12StProfileDbr->getSeqLen(id12));
+        if (seq12St->L != qSeq.L) {
+            return false;
+        }
+        memcpy(table.data(), seq12St->getAlignmentProfile(), table.size());
+        return true;
+    }
+    for (int j = 0; j < AUX_STATE_CNT; ++j) {
+        for (int i = 0; i < qSeq.L; ++i) {
+            table[(size_t)j * qSeq.L + i] = subMatAux->subMatrix[j][qSeq.numSequenceAux[i]];
+        }
+    }
+    return true;
+}
+
 #ifdef HAVE_CUDA
 
 volatile sig_atomic_t keepRunningClient = 1;
@@ -42,37 +71,30 @@ void intHandlerClient(int) {
 }
 
 void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12St,
-                    DBReader<DBKeyType> * qdbr, DBReader<DBKeyType> * tdbr,
+                    DBReader<DBKeyType> * qdbr, DBReader<DBKeyType> * tdbr, DBReader<DBKeyType> * q12StProfileDbr,
                     bool sameDB, DBWriter & resultWriter, EvalueComputation * evaluer,
                     QueryMatcherTaxonomyHook *taxonomyHook){
     Debug::Progress progress(qdbr->getSize());
     const int querySeqType = qdbr->getDbtype();
     Sequence qSeq(par.maxSeqLen, querySeqType, subMat, 0, false, par.compBiasCorrection);
 
-    const Sequence::SeqAuxInfo *auxInfo = Sequence::getAuxInfo(querySeqType);
-    const int rows12St = (auxInfo != NULL && auxInfo->auxAlphabetSize > 0)
-        ? (int)auxInfo->auxAlphabetSize : 12;
     const bool packedTarget =
         (DBReader<DBKeyType>::getExtendedDbtype(tdbr->getDbtype()) & Parameters::DBTYPE_EXTENDED_AUX_SEQ) != 0;
     if (packedTarget && par.prefMode == Parameters::PREF_MODE_UNGAPPED_AND_GAPPED) {
         Debug(Debug::ERROR) << "--prefilter-mode " << par.prefMode << " is not supported for 3Di+12-state databases\n";
         EXIT(EXIT_FAILURE);
     }
-    const bool isProfileQuery = Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE);
-    DBReader<DBKeyType> *q12StProfileDbr = NULL;
-    Sequence *seq12St = NULL;
-    if (packedTarget && subMat12St != NULL && isProfileQuery && FileUtil::fileExists((par.db1 + "12.dbtype").c_str())) {
-        q12StProfileDbr = new DBReader<DBKeyType>((par.db1 + "12").c_str(), (par.db1 + "12.index").c_str(), 1,
-                                                  DBReader<DBKeyType>::USE_INDEX | DBReader<DBKeyType>::USE_DATA);
-        q12StProfileDbr->open(DBReader<DBKeyType>::NOSORT);
-        seq12St = new Sequence(par.maxSeqLen, Parameters::DBTYPE_HMM_PROFILE, subMat12St, 0, false, false, false);
-        Debug(Debug::INFO) << "Using 12-state query profile " << (par.db1 + "12") << " for the GPU prefilter\n";
+    if (packedTarget && (par.maskNrepeats < 1 || par.maskNrepeats + 1 > MARV_MAX_MASK_THRESHOLD)) {
+        Debug(Debug::ERROR) << "--mask-n-repeat must be between 1 and " << (MARV_MAX_MASK_THRESHOLD - 1)
+                            << " for the GPU prefilter on 3Di+12-state databases\n";
+        EXIT(EXIT_FAILURE);
     }
+    const bool isProfileQuery = Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE);
+    Sequence seq12St(par.maxSeqLen, Parameters::DBTYPE_HMM_PROFILE, subMat12St != NULL ? subMat12St : subMat, 0, false, false, false);
     const bool have12StQuery =
         packedTarget && (subMat12St != NULL) && (qSeq.numSequenceAux != NULL || q12StProfileDbr != NULL);
-    if (packedTarget && have12StQuery == false) {
-        Debug(Debug::WARNING) << "GPU prefilter scores 3Di only for this run "
-                              << "(12-state channel disabled, or query DB has none)\n";
+    if (packedTarget && subMat12St != NULL && have12StQuery == false) {
+        Debug(Debug::WARNING) << "GPU prefilter scores 3Di only: the query DB has no 12-state channel\n";
     }
     const size_t topN = have12StQuery
         ? std::min(tdbr->getSize(), (size_t) Parameters::AUX_RESCORE_TOP_N)
@@ -98,14 +120,8 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
     std::vector<hit_t> shortResults;
     std::vector<Matcher::result_t> resultsAln;
     const unsigned char x3Di = subMat->aa2num[static_cast<int>('X')];
-    const int MARV_MAX_MASK_THRESHOLD = 511;
     // Masker::maskRepeats masks runs longer than --mask-n-repeat, libmarv masks runs of at least maskThreshold
-    int maskThreshold = (par.maskNrepeats > 0) ? par.maskNrepeats + 1 : MARV_MAX_MASK_THRESHOLD;
-    if (maskThreshold > MARV_MAX_MASK_THRESHOLD) {
-        Debug(Debug::WARNING) << "--mask-n-repeat " << maskThreshold << " exceeds the GPU limit; "
-                              << "clamping to " << MARV_MAX_MASK_THRESHOLD << "\n";
-        maskThreshold = MARV_MAX_MASK_THRESHOLD;
-    }
+    const int maskThreshold = par.maskNrepeats + 1;
 
     std::string resultBuffer;
     resultBuffer.reserve(262144);
@@ -237,72 +253,54 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
 
         const size_t batchEnd = std::min(batchStart + batchMax, qdbr->getSize());
         for (size_t id = batchStart; id < batchEnd; id++) {
-        const size_t slot = id - batchStart;
-        size_t queryKey = qdbr->getDbKey(id);
-        unsigned int querySeqLen = qdbr->getSeqLen(id);
-        char *querySeqData = qdbr->getData(id, 0);
-        qSeq.mapSequence(id, queryKey, querySeqData, querySeqLen);
-        int8_t* profile = NULL;
-        int8_t* profile12St = NULL;
-        if (packedTarget) {
-            batchProfile12StBuf[slot].assign((size_t)rows12St * (size_t)qSeq.L, 0);
-            profile12St = batchProfile12StBuf[slot].data();
-        }
-        if (isProfileQuery) {
-            batchProfileBuf[slot].assign(qSeq.profile_for_alignment,
-                                         qSeq.profile_for_alignment + (size_t)subMat->alphabetSize * (size_t)qSeq.L);
-            profile = batchProfileBuf[slot].data();
-            if (q12StProfileDbr != NULL) {
-                const size_t id12 = q12StProfileDbr->getId(queryKey);
-                if (id12 != DB_ENTRY_NOT_FOUND) {
-                    seq12St->mapSequence(id12, queryKey, q12StProfileDbr->getData(id12, 0), q12StProfileDbr->getSeqLen(id12));
-                }
-                if (id12 != DB_ENTRY_NOT_FOUND && seq12St->L == qSeq.L) {
-                    const int8_t *profileAln12St = seq12St->getAlignmentProfile();
-                    for (size_t j = 0; j < (size_t)rows12St; ++j) {
-                        for (size_t i = 0; i < (size_t)qSeq.L; ++i) {
-                            profile12St[j * qSeq.L + i] = profileAln12St[j * qSeq.L + i];
-                        }
-                    }
-                } else {
+            const size_t slot = id - batchStart;
+            DBKeyType queryKey = qdbr->getDbKey(id);
+            unsigned int querySeqLen = qdbr->getSeqLen(id);
+            char *querySeqData = qdbr->getData(id, 0);
+            qSeq.mapSequence(id, queryKey, querySeqData, querySeqLen);
+            int8_t* profile = NULL;
+            int8_t* profile12St = NULL;
+            if (packedTarget) {
+                if (have12StQuery
+                    && fillAuxTable(batchProfile12StBuf[slot], qSeq, queryKey, subMat12St, q12StProfileDbr, &seq12St, 0) == false) {
                     Debug(Debug::WARNING) << "No matching 12-state profile for query " << queryKey
                                           << "; scoring its 12-state channel as 0\n";
+                } else if (have12StQuery == false) {
+                    batchProfile12StBuf[slot].assign((size_t)AUX_STATE_CNT * qSeq.L, 0);
                 }
+                profile12St = batchProfile12StBuf[slot].data();
             }
-        } else {
-            batchProfileBuf[slot].resize((size_t)subMat->alphabetSize * (size_t)qSeq.L);
-            profile = batchProfileBuf[slot].data();
-            if (compositionBias != NULL) {
-                if ((size_t)qSeq.L * sizeof(float) >= compBufferSize) {
-                    compBufferSize = (size_t)qSeq.L * 1.5 * sizeof(float);
-                    compositionBias = (float*)realloc(compositionBias, compBufferSize);
-                    // memset(compositionBias, 0, compBufferSize);
-                }
-                SubstitutionMatrix::calcLocalAaBiasCorrection(subMat, qSeq.numSequence, qSeq.L, compositionBias, par.compBiasCorrectionScale);
-            }
-            for (size_t j = 0; j < (size_t)subMat->alphabetSize; ++j) {
-                for (size_t i = 0; i < (size_t)qSeq.L; ++i) {
-                    short bias = 0;
-                    if (compositionBias != NULL) {
-                        bias = static_cast<short>((compositionBias[i] < 0.0) ? (compositionBias[i] - 0.5) : (compositionBias[i] + 0.5));
+            if (isProfileQuery) {
+                batchProfileBuf[slot].assign(qSeq.profile_for_alignment,
+                                             qSeq.profile_for_alignment + (size_t)subMat->alphabetSize * (size_t)qSeq.L);
+                profile = batchProfileBuf[slot].data();
+            } else {
+                batchProfileBuf[slot].resize((size_t)subMat->alphabetSize * (size_t)qSeq.L);
+                profile = batchProfileBuf[slot].data();
+                if (compositionBias != NULL) {
+                    if ((size_t)qSeq.L * sizeof(float) >= compBufferSize) {
+                        compBufferSize = (size_t)qSeq.L * 1.5 * sizeof(float);
+                        compositionBias = (float*)realloc(compositionBias, compBufferSize);
+                        // memset(compositionBias, 0, compBufferSize);
                     }
-                    profile[j * qSeq.L  + i] = subMat->subMatrix[j][qSeq.numSequence[i]] + bias;
+                    SubstitutionMatrix::calcLocalAaBiasCorrection(subMat, qSeq.numSequence, qSeq.L, compositionBias, par.compBiasCorrectionScale);
                 }
-            }
-            if (have12StQuery) {
-                for (size_t j = 0; j < (size_t)rows12St; ++j) {
+                for (size_t j = 0; j < (size_t)subMat->alphabetSize; ++j) {
                     for (size_t i = 0; i < (size_t)qSeq.L; ++i) {
-                        profile12St[j * qSeq.L + i] = subMat12St->subMatrix[j][qSeq.numSequenceAux[i]];
+                        short bias = 0;
+                        if (compositionBias != NULL) {
+                            bias = static_cast<short>((compositionBias[i] < 0.0) ? (compositionBias[i] - 0.5) : (compositionBias[i] + 0.5));
+                        }
+                        profile[j * qSeq.L  + i] = subMat->subMatrix[j][qSeq.numSequence[i]] + bias;
                     }
                 }
             }
-        }
-        batchSeqBuf[slot].assign(qSeq.numSequence, qSeq.numSequence + qSeq.L);
-        batchSeqPtr.emplace_back(reinterpret_cast<const char*>(batchSeqBuf[slot].data()));
-        batchLen.emplace_back(qSeq.L);
-        batchPssm.emplace_back(profile);
-        batchPssm12St.emplace_back(profile12St);
-        batchKey.emplace_back(queryKey);
+            batchSeqBuf[slot].assign(qSeq.numSequence, qSeq.numSequence + qSeq.L);
+            batchSeqPtr.emplace_back(reinterpret_cast<const char*>(batchSeqBuf[slot].data()));
+            batchLen.emplace_back(qSeq.L);
+            batchPssm.emplace_back(profile);
+            batchPssm12St.emplace_back(profile12St);
+            batchKey.emplace_back(queryKey);
         }
 
         const size_t batchCount = batchLen.size();
@@ -390,79 +388,79 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
         }
 
         for (size_t slot = 0; slot < batchCount; slot++) {
-        const DBKeyType queryKey = batchKey[slot];
-        const int queryLen = batchLen[slot];
-        const Marv::Result* slotResults = results.data() + slot * topN;
-        const size_t slotResultCount = statsVec[slot].results;
+            const DBKeyType queryKey = batchKey[slot];
+            const int queryLen = batchLen[slot];
+            const Marv::Result* slotResults = results.data() + slot * topN;
+            const size_t slotResultCount = statsVec[slot].results;
 
-        for(size_t i = 0; i < slotResultCount; i++){
-            DBKeyType targetKey = tdbr->getDbKey(slotResults[i].id);
-            int score = slotResults[i].score;
-            if(taxonomyHook != NULL){
-                TaxID currTax = taxonomyHook->taxonomyMapping->lookup(targetKey);
-                if (taxonomyHook->expression[0]->isAncestor(currTax) == false) {
-                    continue;
-                }
-            }
-            // check if evalThr != inf
-            // double evalue = 0.0;
-            // if (par.evalThr < std::numeric_limits<double>::max()) {
-            //     evalue = evaluer->computeEvalue(score, qSeq.L);
-            // }
-            // bool hasEvalue = (evalue <= par.evalThr);
-            bool hasDiagScore = (score > par.minDiagScoreThr);
-
-            const bool isIdentity = (queryKey == targetKey && (par.includeIdentity || sameDB))? true : false;
-            // --filter-hits
-            if (isIdentity || hasDiagScore) {
-                if(par.prefMode == Parameters::PREF_MODE_UNGAPPED_AND_GAPPED){
-                    Matcher::result_t res;
-                    res.dbKey = targetKey;
-                    res.eval = evaluer->computeEvalue(score, queryLen);
-                    res.dbEndPos = slotResults[i].dbEndPos;
-                    res.dbLen = tdbr->getSeqLen(slotResults[i].id);
-                    res.qEndPos =  slotResults[i].qEndPos;
-                    res.qLen = queryLen;
-                    unsigned int qAlnLen = std::max(static_cast<unsigned int>(res.qEndPos), static_cast<unsigned int>(1));
-                    unsigned int dbAlnLen = std::max(static_cast<unsigned int>(res.dbEndPos), static_cast<unsigned int>(1));
-                    //seqId = (alignment.score1 / static_cast<float>(std::max(dbAlnLen, qAlnLen)))  * 0.1656 + 0.1141;
-                    res.seqId = Matcher::estimateSeqIdByScorePerCol(score, qAlnLen, dbAlnLen);
-                    res.qcov = SmithWaterman::computeCov(0, res.qEndPos, res.qLen );
-                    res.dbcov = SmithWaterman::computeCov(0, res.dbEndPos, res.dbLen );
-                    res.score = evaluer->computeBitScore(score);
-                    if(Alignment::checkCriteria(res, isIdentity, par.evalThr,  par.seqIdThr,  par.alnLenThr,  par.covMode,  par.covThr)){
-                        resultsAln.emplace_back(res);
+            for(size_t i = 0; i < slotResultCount; i++){
+                DBKeyType targetKey = tdbr->getDbKey(slotResults[i].id);
+                int score = slotResults[i].score;
+                if(taxonomyHook != NULL){
+                    TaxID currTax = taxonomyHook->taxonomyMapping->lookup(targetKey);
+                    if (taxonomyHook->expression[0]->isAncestor(currTax) == false) {
+                        continue;
                     }
-                } else {
-                    hit_t hit;
-                    hit.seqId = targetKey;
-                    hit.prefScore = score;
-                    hit.diagonal = 0;
-                    shortResults.emplace_back(hit);
+                }
+                // check if evalThr != inf
+                // double evalue = 0.0;
+                // if (par.evalThr < std::numeric_limits<double>::max()) {
+                //     evalue = evaluer->computeEvalue(score, qSeq.L);
+                // }
+                // bool hasEvalue = (evalue <= par.evalThr);
+                bool hasDiagScore = (score > par.minDiagScoreThr);
+
+                const bool isIdentity = (queryKey == targetKey && (par.includeIdentity || sameDB))? true : false;
+                // --filter-hits
+                if (isIdentity || hasDiagScore) {
+                    if(par.prefMode == Parameters::PREF_MODE_UNGAPPED_AND_GAPPED){
+                        Matcher::result_t res;
+                        res.dbKey = targetKey;
+                        res.eval = evaluer->computeEvalue(score, queryLen);
+                        res.dbEndPos = slotResults[i].dbEndPos;
+                        res.dbLen = tdbr->getSeqLen(slotResults[i].id);
+                        res.qEndPos =  slotResults[i].qEndPos;
+                        res.qLen = queryLen;
+                        unsigned int qAlnLen = std::max(static_cast<unsigned int>(res.qEndPos), static_cast<unsigned int>(1));
+                        unsigned int dbAlnLen = std::max(static_cast<unsigned int>(res.dbEndPos), static_cast<unsigned int>(1));
+                        //seqId = (alignment.score1 / static_cast<float>(std::max(dbAlnLen, qAlnLen)))  * 0.1656 + 0.1141;
+                        res.seqId = Matcher::estimateSeqIdByScorePerCol(score, qAlnLen, dbAlnLen);
+                        res.qcov = SmithWaterman::computeCov(0, res.qEndPos, res.qLen );
+                        res.dbcov = SmithWaterman::computeCov(0, res.dbEndPos, res.dbLen );
+                        res.score = evaluer->computeBitScore(score);
+                        if(Alignment::checkCriteria(res, isIdentity, par.evalThr,  par.seqIdThr,  par.alnLenThr,  par.covMode,  par.covThr)){
+                            resultsAln.emplace_back(res);
+                        }
+                    } else {
+                        hit_t hit;
+                        hit.seqId = targetKey;
+                        hit.prefScore = score;
+                        hit.diagonal = 0;
+                        shortResults.emplace_back(hit);
+                    }
                 }
             }
-        }
-        if(par.prefMode == Parameters::PREF_MODE_UNGAPPED_AND_GAPPED) {
-            SORT_PARALLEL(resultsAln.begin(), resultsAln.end(), Matcher::compareHits);
-            size_t maxSeqs = std::min(par.maxResListLen, resultsAln.size());
-            for (size_t i = 0; i < maxSeqs; ++i) {
-                size_t len = Matcher::resultToBuffer(buffer, resultsAln[i], false);
-                resultBuffer.append(buffer, len);
+            if(par.prefMode == Parameters::PREF_MODE_UNGAPPED_AND_GAPPED) {
+                SORT_PARALLEL(resultsAln.begin(), resultsAln.end(), Matcher::compareHits);
+                size_t maxSeqs = std::min(par.maxResListLen, resultsAln.size());
+                for (size_t i = 0; i < maxSeqs; ++i) {
+                    size_t len = Matcher::resultToBuffer(buffer, resultsAln[i], false);
+                    resultBuffer.append(buffer, len);
+                }
+            }else{
+                SORT_PARALLEL(shortResults.begin(), shortResults.end(), hit_t::compareHitsByScoreAndId);
+                size_t maxSeqs = std::min(par.maxResListLen, shortResults.size());
+                for (size_t i = 0; i < maxSeqs; ++i) {
+                    size_t len = QueryMatcher::prefilterHitToBuffer(buffer, shortResults[i]);
+                    resultBuffer.append(buffer, len);
+                }
             }
-        }else{
-            SORT_PARALLEL(shortResults.begin(), shortResults.end(), hit_t::compareHitsByScoreAndId);
-            size_t maxSeqs = std::min(par.maxResListLen, shortResults.size());
-            for (size_t i = 0; i < maxSeqs; ++i) {
-                size_t len = QueryMatcher::prefilterHitToBuffer(buffer, shortResults[i]);
-                resultBuffer.append(buffer, len);
-            }
-        }
 
-        resultWriter.writeData(resultBuffer.c_str(), resultBuffer.length(), queryKey, 0);
-        resultBuffer.clear();
-        shortResults.clear();
-        resultsAln.clear();
-        progress.updateProgress();
+            resultWriter.writeData(resultBuffer.c_str(), resultBuffer.length(), queryKey, 0);
+            resultBuffer.clear();
+            shortResults.clear();
+            resultsAln.clear();
+            progress.updateProgress();
         }
     }
     if (marv != NULL) {
@@ -474,17 +472,13 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
     if (compositionBias != NULL) {
         free(compositionBias);
     }
-    if (q12StProfileDbr != NULL) {
-        q12StProfileDbr->close();
-        delete q12StProfileDbr;
-        delete seq12St;
-    }
 }
 #endif
 
-static int scoreAuxOnDiagonal(const unsigned char *qAux, int qLen,
-                               const unsigned char *tAux, int tLen,
-                               BaseMatrix *subMatAux, int diagonal) {
+// best-scoring segment of the 12-state score along a diagonal, as libmarv's diagonal rescore computes it;
+// auxTable is the query's table from fillAuxTable, target states outside it (X) score 0
+static int scoreAuxOnDiagonal(const std::vector<int8_t> &auxTable, int qLen,
+                              const unsigned char *tAux, int tLen, int diagonal) {
     if (qLen <= 0 || tLen <= 0) {
         return 0;
     }
@@ -497,35 +491,8 @@ static int scoreAuxOnDiagonal(const unsigned char *qAux, int qLen,
     int segScore = 0;
     int maxAux = 0;
     for (int k = 0; k < cells; k++) {
-        segScore += subMatAux->subMatrix[tAux[s + k]][qAux[q + k]];
-        if (segScore < 0) {
-            segScore = 0;
-        }
-        if (segScore > maxAux) {
-            maxAux = segScore;
-        }
-    }
-    return maxAux;
-}
-
-// Same as scoreAuxOnDiagonal for a profile query: the aux score of a cell is the query's 12-state
-// profile column at the target's aux state (profile12St is aux-state-major, qLen columns), which is
-// what the GPU diagonal rescore reads from its 12-state PSSM.
-static int scoreAuxProfileOnDiagonal(const int8_t *profile12St, int qLen,
-                                      const unsigned char *tAux, int tLen, int diagonal) {
-    if (qLen <= 0 || tLen <= 0) {
-        return 0;
-    }
-    int q = (diagonal > 0) ? diagonal : 0;
-    int s = (diagonal < 0) ? -diagonal : 0;
-    if (q >= qLen || s >= tLen) {
-        return 0;
-    }
-    const int cells = std::min(qLen - q, tLen - s);
-    int segScore = 0;
-    int maxAux = 0;
-    for (int k = 0; k < cells; k++) {
-        segScore += profile12St[(size_t)tAux[s + k] * qLen + (q + k)];
+        const unsigned char state = tAux[s + k];
+        segScore += (state < AUX_STATE_CNT) ? auxTable[(size_t)state * qLen + (q + k)] : 0;
         if (segScore < 0) {
             segScore = 0;
         }
@@ -537,7 +504,7 @@ static int scoreAuxProfileOnDiagonal(const int8_t *profile12St, int qLen,
 }
 
 void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAux, int8_t * tinySubMat,
-                    DBReader<unsigned int> * qdbr, DBReader<unsigned int> * tdbr,
+                    DBReader<DBKeyType> * qdbr, DBReader<DBKeyType> * tdbr, DBReader<DBKeyType> * q12StProfileDbr,
                     SequenceLookup * sequenceLookup, bool sameDB, DBWriter & resultWriter, EvalueComputation * evaluer,
                     QueryMatcherTaxonomyHook *taxonomyHook, int alignmentMode){
     std::vector<hit_t> shortResults;
@@ -545,26 +512,14 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
     Debug::Progress progress(qdbr->getSize());
     const int targetSeqType = tdbr->getDbtype();
     const int querySeqType = qdbr->getDbtype();
-    // Score the primary alphabet over every target, keep the top Parameters::AUX_RESCORE_TOP_N, add the aux
+    // Score the primary alphabet over every target, keep the top AUX_RESCORE_TOP_N, add the aux
     // channel to those on their best primary diagonal, re-rank, then truncate to --max-seqs.
-    // Only the top N can gain the aux term, so N is what decides how far down the primary
-    // ranking the aux channel is still able to promote a hit.
-    // The target DB must be packed and aux scoring on, and the query must carry the aux channel:
-    // its own aux states for a sequence query, the 12-state profile next to it (<query>12, as on
-    // the GPU) for a profile query.
+    // The query carries the aux channel itself, or as a profile next to it (q12StProfileDbr).
     const bool queryHasAux = (Sequence::getAuxInfo(querySeqType) != NULL)
                              && (Sequence::getAuxInfo(querySeqType)->auxRemap != NULL);
     const bool targetHasAux = (Sequence::getAuxInfo(targetSeqType) != NULL)
                               && (Sequence::getAuxInfo(targetSeqType)->auxRemap != NULL);
     const bool isProfileQuery = Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE);
-    DBReader<DBKeyType> *q12StProfileDbr = NULL;
-    if (subMatAux != NULL && targetHasAux && alignmentMode == 0 && isProfileQuery
-        && FileUtil::fileExists((par.db1 + "12.dbtype").c_str())) {
-        q12StProfileDbr = new DBReader<DBKeyType>((par.db1 + "12").c_str(), (par.db1 + "12.index").c_str(), par.threads,
-                                                  DBReader<DBKeyType>::USE_INDEX | DBReader<DBKeyType>::USE_DATA);
-        q12StProfileDbr->open(DBReader<DBKeyType>::NOSORT);
-        Debug(Debug::INFO) << "Using 12-state query profile " << (par.db1 + "12") << " for the CPU ungapped prefilter\n";
-    }
     const bool useAux = (subMatAux != NULL) && targetHasAux && (alignmentMode == 0)
                          && (isProfileQuery ? (q12StProfileDbr != NULL) : queryHasAux);
     if (subMatAux != NULL && useAux == false) {
@@ -588,15 +543,12 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
         std::vector<hit_t> threadShortResults;
         Sequence qSeq(par.maxSeqLen, querySeqType, subMat, 0, false, par.compBiasCorrection);
         Sequence tSeq(par.maxSeqLen, targetSeqType, subMat, 0, false, par.compBiasCorrection);
-        Sequence *seq12St = (q12StProfileDbr != NULL)
-            ? new Sequence(par.maxSeqLen, Parameters::DBTYPE_HMM_PROFILE, subMatAux, 0, false, false, false) : NULL;
-        const int8_t *qProfile12St = NULL;
+        Sequence seq12St(par.maxSeqLen, Parameters::DBTYPE_HMM_PROFILE, subMatAux != NULL ? subMatAux : subMat, 0, false, false, false);
+        std::vector<int8_t> auxTable;
+        bool haveAuxTable = false;
         SmithWaterman aligner(par.maxSeqLen, subMat->alphabetSize,
                               par.compBiasCorrection, par.compBiasCorrectionScale, NULL);
-        // A packed DB carries no mask of its own -- masking it at write time would destroy the
-        // states the aligner reads back -- so the primary channel of each target is repeat-masked
-        // here, the same way the GPU kernel masks it. Queries are not masked. Only repeats: tantan
-        // and the lowercase test are both meaningless on a packed byte.
+        // A packed DB doesn't have left-over space for masking; targets are repeat-masked here, queries not
         Masker masker(*subMat);
         const bool maskPacked = (par.maskNrepeats > 0) && targetHasAux;
 
@@ -604,19 +556,13 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
         resultBuffer.reserve(262144);
         for (size_t id = 0; id < qdbr->getSize(); id++) {
             char *querySeqData = qdbr->getData(id, thread_idx);
-            size_t queryKey = qdbr->getDbKey(id);
+            DBKeyType queryKey = qdbr->getDbKey(id);
             unsigned int querySeqLen = qdbr->getSeqLen(id);
 
             qSeq.mapSequence(id, queryKey, querySeqData, querySeqLen);
-            qProfile12St = NULL;
-            if (seq12St != NULL) {
-                const size_t id12 = q12StProfileDbr->getId(queryKey);
-                if (id12 != DB_ENTRY_NOT_FOUND) {
-                    seq12St->mapSequence(id12, queryKey, q12StProfileDbr->getData(id12, thread_idx), q12StProfileDbr->getSeqLen(id12));
-                }
-                if (id12 != DB_ENTRY_NOT_FOUND && seq12St->L == qSeq.L) {
-                    qProfile12St = seq12St->getAlignmentProfile();
-                } else if (thread_idx == 0) {
+            if (useAux) {
+                haveAuxTable = fillAuxTable(auxTable, qSeq, queryKey, subMatAux, isProfileQuery ? q12StProfileDbr : NULL, &seq12St, thread_idx);
+                if (haveAuxTable == false && thread_idx == 0) {
                     Debug(Debug::WARNING) << "No matching 12-state profile for query " << queryKey
                                           << "; scoring its 12-state channel as 0\n";
                 }
@@ -655,9 +601,6 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
                             tSeq.numSequence[i] = ((targetSeq[i] >= 32 && targetSeq[i] <= 52) || targetSeq[i] >= 97)  ? xChar : tSeq.numSequence[i];
                         }
                     }
-                    // The index lookup is pre-masked by IndexBuilder; raw DB data is not, so
-                    // mask here. Primary only, matching the GPU, whose aux channel is a plain
-                    // %12 transform of the stored byte.
                     if (maskPacked) {
                         masker.maskSequence(tSeq, false, par.maskProb, false, par.maskNrepeats);
                     }
@@ -762,35 +705,21 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
                     } else {
                         tSeq.mapSequence(tId, shortResults[i].seqId, sequenceLookup->getSequence(tId));
                     }
-                    if (tSeq.numSequenceAux == NULL) {
+                    if (tSeq.numSequenceAux == NULL || haveAuxTable == false) {
                         continue;
                     }
                     const int diagonal = (int)(short)shortResults[i].diagonal;
-                    if (isProfileQuery) {
-                        if (qProfile12St != NULL) {
-                            shortResults[i].prefScore += scoreAuxProfileOnDiagonal(
-                                    qProfile12St, qSeq.L, tSeq.numSequenceAux, tSeq.L, diagonal);
-                        }
-                        continue;
-                    }
-                    if (qSeq.numSequenceAux == NULL) {
-                        continue;
-                    }
-                    shortResults[i].prefScore += scoreAuxOnDiagonal(
-                            qSeq.numSequenceAux, qSeq.L,
-                            tSeq.numSequenceAux, tSeq.L,
-                            subMatAux, diagonal);
+                    shortResults[i].prefScore += scoreAuxOnDiagonal(auxTable, qSeq.L, tSeq.numSequenceAux, tSeq.L, diagonal);
                 }
 #pragma omp barrier
                 // now apply --min-ungapped-score to the combined score (identity hits are always
                 // kept, matching phase 1 and the GPU path)
 #pragma omp master
                 {
-                    const unsigned int qKey = queryKey;
                     const bool keepIdentity = (par.includeIdentity || sameDB);
                     size_t kept = 0;
                     for (size_t i = 0; i < shortResults.size(); i++) {
-                        const bool isIdentity = (qKey == shortResults[i].seqId) && keepIdentity;
+                        const bool isIdentity = (queryKey == shortResults[i].seqId) && keepIdentity;
                         if (isIdentity || shortResults[i].prefScore > par.minDiagScoreThr) {
                             shortResults[kept++] = shortResults[i];
                         }
@@ -815,11 +744,6 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
             }
 #pragma omp barrier
         }
-        delete seq12St;
-    }
-    if (q12StProfileDbr != NULL) {
-        q12StProfileDbr->close();
-        delete q12StProfileDbr;
     }
 }
 
@@ -914,21 +838,36 @@ int prefilterInternal(int argc, const char **argv, const Command &command, int m
         free(serialized);
     }
 
+    // a profile query carries its aux channel as a profile DB next to it (<query><Sequence::auxProfileSuffix>)
+    DBReader<DBKeyType> *q12StProfileDbr = NULL;
+    const std::string auxProfileDB = par.db1 + Sequence::auxProfileSuffix;
+    if (subMatAux != NULL && Parameters::isEqualDbtype(qdbr->getDbtype(), Parameters::DBTYPE_HMM_PROFILE)
+        && Sequence::auxProfileSuffix.empty() == false && FileUtil::fileExists((auxProfileDB + ".dbtype").c_str())) {
+        q12StProfileDbr = new DBReader<DBKeyType>(auxProfileDB.c_str(), (auxProfileDB + ".index").c_str(), par.threads,
+                                                  DBReader<DBKeyType>::USE_INDEX | DBReader<DBKeyType>::USE_DATA);
+        q12StProfileDbr->open(DBReader<DBKeyType>::NOSORT);
+        Debug(Debug::INFO) << "Using aux-channel query profile " << auxProfileDB << "\n";
+    }
+
     QueryMatcherTaxonomyHook * taxonomyHook = NULL;
     if(par.PARAM_TAXON_LIST.wasSet){
         taxonomyHook = new QueryMatcherTaxonomyHook(par.db2, tdbr, par.taxonList, par.threads);
     }
     if(par.gpu){
 #ifdef HAVE_CUDA
-        runFilterOnGpu(par, subMat, subMatAux, qdbr, tdbr, sameDB,
+        runFilterOnGpu(par, subMat, subMatAux, qdbr, tdbr, q12StProfileDbr, sameDB,
                        resultWriter, evaluer, taxonomyHook);
 #else
         Debug(Debug::ERROR) << "MMseqs2 was compiled without CUDA support\n";
         EXIT(EXIT_FAILURE);
 #endif
     }else{
-        runFilterOnCpu(par, subMat, subMatAux, tinySubMat, qdbr, tdbr, sequenceLookup, sameDB,
+        runFilterOnCpu(par, subMat, subMatAux, tinySubMat, qdbr, tdbr, q12StProfileDbr, sequenceLookup, sameDB,
                    resultWriter, evaluer, taxonomyHook,  mode);
+    }
+    if (q12StProfileDbr != NULL) {
+        q12StProfileDbr->close();
+        delete q12StProfileDbr;
     }
 
     resultWriter.close();

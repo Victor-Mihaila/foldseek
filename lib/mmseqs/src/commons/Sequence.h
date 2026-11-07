@@ -542,6 +542,8 @@ public:
         unsigned int auxAlphabetSize;        // number of states in aux alphabet (e.g. 12)
     };
     static std::vector<SeqAuxInfo> auxRegistry;
+    // suffix of the DB holding a profile query's aux-channel profile (<query><suffix>), empty if none is registered
+    static std::string auxProfileSuffix;
     static void registerAuxSplit(unsigned int extFlag,
                                  const unsigned char *primary,
                                  const unsigned char *aux,

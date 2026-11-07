@@ -37,6 +37,8 @@ void updateValdiation() {
     Sequence::registerAuxSplit(Parameters::DBTYPE_EXTENDED_AUX_SEQ,
                                remap3Di, remapAux, auxMatData, auxMatDataLen,
                                Alphabet12St::STATE_CNT);
+    // the 12-state profile of a profile query <db>_ss is <db>_ss12
+    Sequence::auxProfileSuffix = "12";
 }
 void (*validatorUpdate)(void) = updateValdiation;
 
