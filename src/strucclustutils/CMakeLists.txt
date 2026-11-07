@@ -55,3 +55,8 @@ set(prostt5_source_files
     strucclustutils/ProstT5.h
     strucclustutils/ProstT5.cpp
     PARENT_SCOPE)
+
+set(modernprost_source_files
+    strucclustutils/ModernProst.h
+    strucclustutils/ModernProst.cpp
+    PARENT_SCOPE)
