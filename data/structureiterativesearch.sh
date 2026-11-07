@@ -52,22 +52,17 @@ while [ "$STEP" -lt "$NUM_IT" ]; do
             PARAM="UNGAPPEDPREFILTER_PAR_$STEP"
             eval TMP="\$$PARAM"
         fi
+        # the first step's prefilter is used as is, later ones minus the hits already aligned
+        PREF_OUT="$TMP_PATH/pref_tmp_${STEP}"
         if [ $STEP -eq 0 ]; then
-            if [ "$PREFMODE" = "EXHAUSTIVE" ]; then
-                fake_pref "${QUERYDB}_ss" "${TARGET_PREFILTER}" "$TMP_PATH/pref_${STEP}"
-            else
-                # shellcheck disable=SC2086
-                $RUNNER "$MMSEQS" $TOOL "${QUERYDB}_ss" "${TARGET_PREFILTER}${INDEXEXT}" "$TMP_PATH/pref_${STEP}" ${TMP} \
-                    || fail "Prefilter died"
-            fi
+            PREF_OUT="$TMP_PATH/pref_${STEP}"
+        fi
+        if [ "$PREFMODE" = "EXHAUSTIVE" ]; then
+            fake_pref "${QUERYDB}_ss" "${TARGET_PREFILTER}" "${PREF_OUT}"
         else
-            if [ "$PREFMODE" = "EXHAUSTIVE" ]; then
-                fake_pref "${QUERYDB}_ss" "${TARGET_PREFILTER}" "$TMP_PATH/pref_tmp_${STEP}"
-            else
-                # shellcheck disable=SC2086
-                $RUNNER "$MMSEQS" $TOOL "${QUERYDB}_ss" "${TARGET_PREFILTER}${INDEXEXT}" "$TMP_PATH/pref_tmp_${STEP}" ${TMP} \
-                    || fail "Prefilter died"
-            fi
+            # shellcheck disable=SC2086
+            $RUNNER "$MMSEQS" $TOOL "${QUERYDB}_ss" "${TARGET_PREFILTER}${INDEXEXT}" "${PREF_OUT}" ${TMP} \
+                || fail "Prefilter died"
         fi
         touch "$TMP_PATH/pref_tmp_${STEP}.done"
     fi
