@@ -17,6 +17,7 @@
 #include "IndexReader.h"
 #include "QueryMatcherTaxonomyHook.h"
 #include "Masker.h"
+#include "FileUtil.h"
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -53,8 +54,18 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
         ? (int)auxInfo->auxAlphabetSize : 12;
     const bool packedTarget =
         (DBReader<DBKeyType>::getExtendedDbtype(tdbr->getDbtype()) & Parameters::DBTYPE_EXTENDED_AUX_SEQ) != 0;
+    const bool isProfileQuery = Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE);
+    DBReader<DBKeyType> *q12StProfileDbr = NULL;
+    Sequence *seq12St = NULL;
+    if (packedTarget && subMat12St != NULL && isProfileQuery && FileUtil::fileExists((par.db1 + "12.dbtype").c_str())) {
+        q12StProfileDbr = new DBReader<DBKeyType>((par.db1 + "12").c_str(), (par.db1 + "12.index").c_str(), 1,
+                                                  DBReader<DBKeyType>::USE_INDEX | DBReader<DBKeyType>::USE_DATA);
+        q12StProfileDbr->open(DBReader<DBKeyType>::NOSORT);
+        seq12St = new Sequence(par.maxSeqLen, Parameters::DBTYPE_HMM_PROFILE, subMat12St, 0, false, false, false);
+        Debug(Debug::INFO) << "Using 12-state query profile " << (par.db1 + "12") << " for the GPU prefilter\n";
+    }
     const bool have12StQuery =
-        packedTarget && (subMat12St != NULL) && (qSeq.numSequenceAux != NULL);
+        packedTarget && (subMat12St != NULL) && (qSeq.numSequenceAux != NULL || q12StProfileDbr != NULL);
     if (packedTarget && have12StQuery == false) {
         Debug(Debug::WARNING) << "GPU prefilter scores 3Di only for this run "
                               << "(12-state channel disabled, or query DB has none)\n";
@@ -62,8 +73,6 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
     const size_t topN = have12StQuery
         ? std::min(tdbr->getSize(), (size_t)std::max(1, par.gpuRescoreTopkMult) * par.maxResListLen)
         : par.maxResListLen;
-
-    const bool isProfileQuery = Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE);
 
     const size_t batchMax = (par.gpuServer == 0) ? 32 : 1;
     std::vector<std::vector<int8_t> > batchProfileBuf(batchMax);
@@ -244,6 +253,23 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
                             profile[j * qSeq.L + i] = 0;
                         }
                     }
+                }
+            }
+            if (q12StProfileDbr != NULL) {
+                const size_t id12 = q12StProfileDbr->getId(queryKey);
+                if (id12 != DB_ENTRY_NOT_FOUND) {
+                    seq12St->mapSequence(id12, queryKey, q12StProfileDbr->getData(id12, 0), q12StProfileDbr->getSeqLen(id12));
+                }
+                if (id12 != DB_ENTRY_NOT_FOUND && seq12St->L == qSeq.L) {
+                    const int8_t *profileAln12St = seq12St->getAlignmentProfile();
+                    for (size_t j = 0; j < (size_t)rows12St; ++j) {
+                        for (size_t i = 0; i < (size_t)qSeq.L; ++i) {
+                            profile12St[j * qSeq.L + i] = profileAln12St[j * qSeq.L + i];
+                        }
+                    }
+                } else {
+                    Debug(Debug::WARNING) << "No matching 12-state profile for query " << queryKey
+                                          << "; scoring its 12-state channel as 0\n";
                 }
             }
         } else {
@@ -459,6 +485,11 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
     }
     if (queryMasker != NULL) {
         delete queryMasker;
+    }
+    if (q12StProfileDbr != NULL) {
+        q12StProfileDbr->close();
+        delete q12StProfileDbr;
+        delete seq12St;
     }
 }
 #endif
