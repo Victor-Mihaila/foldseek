@@ -226,7 +226,7 @@ Prefiltering::Prefiltering(const std::string &queryDB,
         const bool queryCPC = DBReader<DBKeyType>::getExtendedDbtype(querySeqType) & Parameters::DBTYPE_EXTENDED_CONTEXT_PSEUDO_COUNTS;
         const bool targetCPC = DBReader<DBKeyType>::getExtendedDbtype(targetSeqType) & Parameters::DBTYPE_EXTENDED_CONTEXT_PSEUDO_COUNTS;
         const bool contextPseudoCnts = queryCPC || targetCPC;
-        kmerThr = getKmerThreshold(sensitivity, isProfileSearch, contextPseudoCnts, par.kmerScore.values, kmerSize);
+        kmerThr = getKmerThreshold(sensitivity, isProfileSearch, contextPseudoCnts, par.kmerScore.values, kmerSize, q12StProfileDbr != NULL);
     }else {
         kmerThr = 0;
     }
@@ -1066,7 +1066,7 @@ void Prefiltering::mergePrefilterSplits(const std::string &outDB, const std::str
     }
 }
 
-int Prefiltering::getKmerThreshold(const float sensitivity, const bool isProfile, const bool hasContextPseudoCnts, const SeqProf<int> kmerScore, const int kmerSize) {
+int Prefiltering::getKmerThreshold(const float sensitivity, const bool isProfile, const bool hasContextPseudoCnts, const SeqProf<int> kmerScore, const int kmerSize, const bool auxProfile) {
     if (isProfile == true && kmerScore.profile() != INT_MAX) {
         return kmerScore.profile();
     }
@@ -1076,7 +1076,8 @@ int Prefiltering::getKmerThreshold(const float sensitivity, const bool isProfile
     float kmerThrBest = FLT_MAX;
     int paramType = isProfile ? Parameters::DBTYPE_HMM_PROFILE : Parameters::DBTYPE_AMINO_ACIDS;
     for(size_t i = 0; i < externalThreshold.size(); i++){
-        if(kmerSize == externalThreshold[i].kmerSize && externalThreshold[i].sequenceType == paramType){
+        if(kmerSize == externalThreshold[i].kmerSize && externalThreshold[i].sequenceType == paramType
+           && externalThreshold[i].auxProfile == (isProfile && auxProfile)){
             return static_cast<int>(externalThreshold[i].base - (externalThreshold[i].sensPerStep * sensitivity));
         }
     }

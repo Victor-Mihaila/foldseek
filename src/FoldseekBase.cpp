@@ -636,7 +636,8 @@ std::vector<Command> foldseekCommands = {
 
 std::vector<KmerThreshold> externalThreshold = {
         {Parameters::DBTYPE_AMINO_ACIDS, 7, 197.0, 11.22},
-        {Parameters::DBTYPE_HMM_PROFILE, 6, 123.55, 3.6364}
+        // 3Di profile queries with a 12-state profile (Foldseek 2): 82 at -s 9.5
+        {Parameters::DBTYPE_HMM_PROFILE, 6, 116.55, 3.6364, true}
 };
 
 std::vector<DatabaseDownload> externalDownloads = {
