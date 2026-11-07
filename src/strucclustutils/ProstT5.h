@@ -64,7 +64,6 @@ public:
     static bool isMetalDevice(const std::string& name) { return name.compare(0, 3, "MTL") == 0 || name == "Metal"; }
 
     std::string predict(const std::string& aa);
-    void perf();
 
     ProstT5Model& model;
 
@@ -72,8 +71,6 @@ private:
     int n_threads = 1;
     ggml_gallocr * galloc = nullptr;
     std::vector<uint8_t> meta;
-    size_t n_calls = 0, n_res = 0;
-    double t_ms = 0.0;
 };
 
 #endif

@@ -20,8 +20,6 @@ typedef struct ggml_gallocr * ggml_gallocr_t;
 typedef struct ggml_backend * ggml_backend_t;
 typedef struct ggml_backend_buffer * ggml_backend_buffer_t;
 
-#define MODERNPROST_3DI_ALPHABET  "ACDEFGHIKLMNPQRSTVWY"
-#define MODERNPROST_12ST_ALPHABET "ACDEFGHIKLMN"
 
 struct ModernProstHparams {
     uint32_t n_layer = 0, n_embd = 0, n_head = 0, head_dim = 0, n_ff = 0;
@@ -76,21 +74,6 @@ public:
     ModernProst(ModernProstModel & model, int threads);
     ~ModernProst();
 
-    bool run(const std::string & aa, std::vector<float> & logits_3di,
-             std::vector<float> & logits_12st);
-    bool predict(const std::string & aa, std::string & three_di,
-                 std::string & twelve_st, std::string & packed);
-
-    bool predict_profiles(const std::string & aa,
-                          std::vector<uint8_t> & rec_3di,
-                          std::vector<uint8_t> & rec_12st);
-    bool run_batch(const std::vector<std::string> & seqs,
-                   std::vector<std::vector<float>> & logits_3di,
-                   std::vector<std::vector<float>> & logits_12st);
-    bool predict_profiles_batch(const std::vector<std::string> & seqs,
-                                std::vector<std::vector<uint8_t>> & rec_3di,
-                                std::vector<std::vector<uint8_t>> & rec_12st);
-
     bool predict_profiles_many(const std::vector<std::string> & seqs,
                                std::vector<std::vector<uint8_t>> & rec_3di,
                                std::vector<std::vector<uint8_t>> & rec_12st,
@@ -134,6 +117,9 @@ private:
     static int bucket_for(int n);
 
     int n_threads = 1;
+    // compute backend: the model's on a GPU, an own CPU backend otherwise, so contexts can share one CPU model
+    ggml_backend_t backend = nullptr;
+    bool own_backend = false;
     std::map<std::tuple<int,int,int>, Cached> cache;
 };
 

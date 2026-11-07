@@ -7,18 +7,25 @@
 #include "gguf.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <stdexcept>
 
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+namespace {
+// Foldseek is built without exceptions: report like Debug(Debug::ERROR) and EXIT(EXIT_FAILURE)
+[[noreturn]] void fail(const std::string & msg) {
+    fflush(stdout);
+    fprintf(stderr, "%s\n", msg.c_str());
+    exit(EXIT_FAILURE);
+}
+}
 
 static const char * k3Di = "ACDEFGHIKLMNPQRSTVWY";
 
@@ -54,7 +61,7 @@ static int32_t relative_position_bucket(int32_t x, int32_t y, uint64_t n_buckets
 
 static ggml_tensor * need(ggml_context * ctx, const std::string & name) {
     ggml_tensor * t = ggml_get_tensor(ctx, name.c_str());
-    if (t == nullptr) throw std::runtime_error("ProstT5: missing tensor " + name);
+    if (t == nullptr) fail("ProstT5: missing tensor " + name);
     return t;
 }
 
@@ -62,16 +69,16 @@ ProstT5Model::ProstT5Model(const std::string& model_file, std::string& device) {
     ggml_context * meta = nullptr;
     gguf_init_params gp = {  true,  &meta };
     gguf = gguf_init_from_file(model_file.c_str(), gp);
-    if (gguf == nullptr) throw std::runtime_error("ProstT5: cannot read gguf: " + model_file);
+    if (gguf == nullptr) fail("ProstT5: cannot read gguf: " + model_file);
 
     auto u32 = [&](const char * k) {
         const int64_t i = gguf_find_key(gguf, k);
-        if (i < 0) throw std::runtime_error(std::string("ProstT5: missing key ") + k);
+        if (i < 0) fail(std::string("ProstT5: missing key ") + k);
         return (int) gguf_get_val_u32(gguf, i);
     };
     auto f32 = [&](const char * k) {
         const int64_t i = gguf_find_key(gguf, k);
-        if (i < 0) throw std::runtime_error(std::string("ProstT5: missing key ") + k);
+        if (i < 0) fail(std::string("ProstT5: missing key ") + k);
         return gguf_get_val_f32(gguf, i);
     };
     n_layer       = u32("t5encoder.block_count");
@@ -83,11 +90,11 @@ ProstT5Model::ProstT5Model(const std::string& model_file, std::string& device) {
     eps           = f32("t5encoder.attention.layer_norm_rms_epsilon");
     {
         const int64_t i = gguf_find_key(gguf, "tokenizer.ggml.tokens");
-        if (i < 0) throw std::runtime_error("ProstT5: missing tokenizer.ggml.tokens");
+        if (i < 0) fail("ProstT5: missing tokenizer.ggml.tokens");
         for (size_t j = 0; j < gguf_get_arr_n(gguf, i); ++j) vocab[gguf_get_arr_str(gguf, i, j)] = (int) j;
         auto id = [&](const char * s) {
             auto it = vocab.find(s);
-            if (it == vocab.end()) throw std::runtime_error(std::string("ProstT5: token not in vocab: ") + s);
+            if (it == vocab.end()) fail(std::string("ProstT5: token not in vocab: ") + s);
             return it->second;
         };
         tok_aa2fold = id("<AA2fold>");
@@ -98,11 +105,11 @@ ProstT5Model::ProstT5Model(const std::string& model_file, std::string& device) {
     ggml_backend_dev_t dev = nullptr;
     if (!(device.empty() || device == "none" || device == "CPU")) {
         dev = ggml_backend_dev_by_name(device.c_str());
-        if (dev == nullptr) throw std::runtime_error("ProstT5: no ggml device named " + device);
+        if (dev == nullptr) fail("ProstT5: no ggml device named " + device);
     }
     if (dev == nullptr) dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
     backend = ggml_backend_dev_init(dev, nullptr);
-    if (backend == nullptr) throw std::runtime_error("ProstT5: cannot init backend for " + device);
+    if (backend == nullptr) fail("ProstT5: cannot init backend for " + device);
     is_cpu = ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU;
 
     const int64_t n_tensors = gguf_get_n_tensors(gguf);
@@ -118,13 +125,13 @@ ProstT5Model::ProstT5Model(const std::string& model_file, std::string& device) {
 
     const size_t data_off = gguf_get_data_offset(gguf);
     int fd = open(model_file.c_str(), O_RDONLY);
-    if (fd < 0) throw std::runtime_error("ProstT5: cannot open " + model_file);
+    if (fd < 0) fail("ProstT5: cannot open " + model_file);
     struct stat st;
     fstat(fd, &st);
     map_size = (size_t) st.st_size;
     map = mmap(nullptr, map_size, PROT_READ, MAP_SHARED, fd, 0);
     close(fd);
-    if (map == MAP_FAILED) { map = nullptr; throw std::runtime_error("ProstT5: mmap failed for " + model_file); }
+    if (map == MAP_FAILED) { map = nullptr; fail("ProstT5: mmap failed for " + model_file); }
 
     if (is_cpu) {
         buf_w = ggml_backend_cpu_buffer_from_ptr((char *) map + data_off, map_size - data_off);
@@ -135,21 +142,21 @@ ProstT5Model::ProstT5Model(const std::string& model_file, std::string& device) {
     } else {
         munmap(map, map_size); map = nullptr;
         buf_w = ggml_backend_alloc_ctx_tensors(ctx_w, backend);
-        if (buf_w == nullptr) throw std::runtime_error("ProstT5: cannot allocate weights on " + device);
+        if (buf_w == nullptr) fail("ProstT5: cannot allocate weights on " + device);
         ggml_backend_buffer_type_t host_buft = ggml_backend_dev_host_buffer_type(dev);
         const size_t chunk = 64u << 20;
         ggml_backend_buffer_t stage = host_buft ? ggml_backend_buft_alloc_buffer(host_buft, chunk) : nullptr;
         std::vector<char> fallback;
         char * sbuf = stage ? (char *) ggml_backend_buffer_get_base(stage) : (fallback.resize(chunk), fallback.data());
         int fdr = open(model_file.c_str(), O_RDONLY);
-        if (fdr < 0) throw std::runtime_error("ProstT5: cannot open " + model_file);
+        if (fdr < 0) fail("ProstT5: cannot open " + model_file);
         for (ggml_tensor * t = ggml_get_first_tensor(ctx_w); t; t = ggml_get_next_tensor(ctx_w, t)) {
             const int64_t i = gguf_find_tensor(gguf, ggml_get_name(t));
             const size_t base = data_off + gguf_get_tensor_offset(gguf, i), nb = ggml_nbytes(t);
             for (size_t done = 0; done < nb; ) {
                 const size_t n = std::min(chunk, nb - done);
                 if (pread(fdr, sbuf, n, (off_t) (base + done)) != (ssize_t) n) {
-                    close(fdr); throw std::runtime_error(std::string("ProstT5: short read on ") + ggml_get_name(t));
+                    close(fdr); fail(std::string("ProstT5: short read on ") + ggml_get_name(t));
                 }
                 ggml_backend_tensor_set(t, sbuf, done, n);
                 done += n;
@@ -200,7 +207,6 @@ ProstT5::~ProstT5() {
 }
 
 std::string ProstT5::predict(const std::string& aa) {
-    const auto t0 = std::chrono::steady_clock::now();
     const int N = (int) aa.size();
     if (N == 0) return std::string();
 
@@ -296,8 +302,6 @@ std::string ProstT5::predict(const std::string& aa) {
         }
         result.push_back(best < 20 ? k3Di[best] : 'X');
     }
-    n_calls++; n_res += N;
-    t_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     return result;
 }
 
@@ -314,9 +318,4 @@ std::vector<std::string> ProstT5::getDevices() {
         devices.push_back(name);
     }
     return devices;
-}
-
-void ProstT5::perf() {
-    fprintf(stderr, "ProstT5: %zu sequences, %zu residues, %.1f ms total, %.0f residues/s\n",
-            n_calls, n_res, t_ms, t_ms > 0 ? 1000.0 * n_res / t_ms : 0.0);
 }

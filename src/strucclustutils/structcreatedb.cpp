@@ -33,6 +33,7 @@
 #endif
 
 #include <iostream>
+#include <memory>
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -478,6 +479,68 @@ void reorderDbByIdOrder(
 }
 
 extern int createdb(int argc, const char **argv, const Command& command);
+#if defined(HAVE_PROSTT5) || defined(HAVE_MODERNPROST)
+// ProstT5 and ModernProst predict structure from sequence: build the plain amino-acid DB with createdb first,
+// shuffled, without masking and on the CPU, dropping those options (and the model option) from argv
+static int createSequenceDb(LocalParameters &par, int argc, const char **argv, const Command &command,
+                            const MMseqsParameter *dropParam) {
+    for (size_t i = 0; i < command.params->size(); ++i) {
+        command.params->at(i)->wasSet = false;
+    }
+    par.shuffleDatabase = true;
+    par.PARAM_SHUFFLE.wasSet = true;
+    const int origGpu = par.gpu;
+    par.gpu = 0;
+    par.PARAM_GPU.wasSet = true;
+    par.maskMode = 0;
+    par.PARAM_MASK_RESIDUES.wasSet = true;
+    par.maskNrepeats = 0;
+    par.PARAM_MASK_N_REPEAT.wasSet = true;
+    std::vector<const char*> newArgv;
+    newArgv.reserve(argc + 1);
+    for (int i = 0; i < argc; ++i) {
+        const char* arg = argv[i];
+        if ((dropParam != NULL && strcmp(arg, dropParam->name) == 0)
+         || strcmp(arg, par.PARAM_GPU.name) == 0
+         || strcmp(arg, par.PARAM_MASK_RESIDUES.name) == 0
+         || strcmp(arg, par.PARAM_MASK_N_REPEAT.name) == 0) {
+            if (i + 1 < argc) {
+                ++i;
+            }
+            continue;
+        }
+        if (strcmp(arg, par.PARAM_SHUFFLE.name) == 0) {
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                ++i;
+            }
+            continue;
+        }
+        newArgv.push_back(arg);
+    }
+    int newArgc = static_cast<int>(newArgv.size());
+    newArgv.push_back(NULL);
+    int status = createdb(newArgc, newArgv.data(), command);
+    fflush(stdout);
+    par.gpu = origGpu;
+    return status;
+}
+
+// rewrite db with its entries in id order (the writer threads interleave them)
+static void sortDbByIdOrder(LocalParameters &par, const std::string &db) {
+    DBReader<unsigned int> resultReader(db.c_str(), (db+".index").c_str(), par.threads, DBReader<unsigned int>::USE_INDEX|DBReader<unsigned int>::USE_DATA);
+    resultReader.open(DBReader<unsigned int>::NOSORT);
+    resultReader.readMmapedDataInMemory();
+    const std::pair<std::string, std::string> tempDb = Util::databaseNames(db + "_tmp");
+    DBWriter resultWriter(tempDb.first.c_str(), tempDb.second.c_str(), par.threads, par.compressed, resultReader.getDbtype());
+    resultWriter.open();
+    resultWriter.sortDatafileByIdOrder(resultReader);
+    resultWriter.close(true);
+    resultReader.close();
+    DBReader<unsigned int>::removeDb(db);
+    DBReader<unsigned int>::moveDb(tempDb.first, db);
+}
+#endif
+
 int structcreatedb(int argc, const char **argv, const Command& command) {
     LocalParameters& par = LocalParameters::getLocalInstance();
     par.parseParameters(argc, argv, command, false, 0, MMseqsParameter::COMMAND_COMMON);
@@ -488,47 +551,14 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
             Debug(Debug::ERROR) << "--modernprost-model and --prostt5-model are mutually exclusive\n";
             return EXIT_FAILURE;
         }
-        for (size_t i = 0; i < command.params->size(); ++i) {
-            command.params->at(i)->wasSet = false;
+        if (FileUtil::fileExists(par.modernprostModel.c_str()) == false) {
+            Debug(Debug::ERROR) << "Could not find ModernProst model " << par.modernprostModel << "\n";
+            return EXIT_FAILURE;
         }
-        par.shuffleDatabase = true;
-        par.PARAM_SHUFFLE.wasSet = true;
-        const int origGpuMp = par.gpu;
-        par.gpu = 0;
-        par.PARAM_GPU.wasSet = true;
-        par.maskMode = 0;
-        par.PARAM_MASK_RESIDUES.wasSet = true;
-        par.maskNrepeats = 0;
-        par.PARAM_MASK_N_REPEAT.wasSet = true;
-        std::vector<const char*> mpArgv;
-        mpArgv.reserve(argc + 1);
-        for (int i = 0; i < argc; ++i) {
-            const char* arg = argv[i];
-            if (strcmp(arg, par.PARAM_MODERNPROST_MODEL.name) == 0
-             || strcmp(arg, par.PARAM_GPU.name) == 0
-             || strcmp(arg, par.PARAM_MASK_RESIDUES.name) == 0
-             || strcmp(arg, par.PARAM_MASK_N_REPEAT.name) == 0) {
-                if (i + 1 < argc) {
-                    ++i;
-                }
-                continue;
-            }
-            if (strcmp(arg, par.PARAM_SHUFFLE.name) == 0) {
-                if (i + 1 < argc && argv[i + 1][0] != '-') {
-                    ++i;
-                }
-                continue;
-            }
-            mpArgv.push_back(arg);
-        }
-        int mpArgc = static_cast<int>(mpArgv.size());
-        mpArgv.push_back(NULL);
-        int mpStatus = createdb(mpArgc, mpArgv.data(), command);
+        int mpStatus = createSequenceDb(par, argc, argv, command, &par.PARAM_MODERNPROST_MODEL);
         if (mpStatus != EXIT_SUCCESS) {
             return mpStatus;
         }
-        fflush(stdout);
-        par.gpu = origGpuMp;
 
         DBReader<unsigned int> reader(outputName.c_str(), (outputName + ".index").c_str(),
                                       par.threads, DBReader<unsigned int>::USE_INDEX | DBReader<unsigned int>::USE_DATA);
@@ -581,6 +611,11 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
                 return EXIT_FAILURE;
             }
         }
+        // one model shared by all CPU threads, one per CUDA device otherwise
+        std::unique_ptr<ModernProstModel> cpuModel;
+        if (par.gpu != 1) {
+            cpuModel.reset(new ModernProstModel(par.modernprostModel, "cpu"));
+        }
         {
             DBWriter wSs  (ssDb.c_str(),   (ssDb   + ".index").c_str(), par.threads, par.compressed, profType);
             DBWriter wSs12(ss12Db.c_str(), (ss12Db + ".index").c_str(), par.threads, par.compressed, profType);
@@ -594,8 +629,11 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
 #ifdef OPENMP
                 thread_idx = omp_get_thread_num();
 #endif
-                ModernProstModel model(par.modernprostModel, par.gpu == 1 ? devices[thread_idx] : "cpu");
-                ModernProst context(model, 1);
+                std::unique_ptr<ModernProstModel> gpuModel;
+                if (par.gpu == 1) {
+                    gpuModel.reset(new ModernProstModel(par.modernprostModel, devices[thread_idx]));
+                }
+                ModernProst context(par.gpu == 1 ? *gpuModel : *cpuModel, 1);
                 std::vector<uint8_t> r3, r12, rAA;
                 const size_t blockSize = par.gpu == 1 ? (size_t) 32768
                                                       : (size_t) std::max(1, par.modernprostBatch) * 8;
@@ -625,14 +663,14 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
                         const std::string & seq = blkSeq[k];
                         const size_t length = seq.size();
                         r3 = std::move(blk3[k]); r12 = std::move(blk12[k]);
-                    rAA.assign(length * 25, 0);
-                    for (size_t j = 0; j < length; ++j) {
-                        const int a = subMatAA.aa2num[(int)(unsigned char) seq[j]];
-                        memcpy(rAA.data() + j * 25, aaBlock[a < 32 ? a : 0], 25);
-                    }
-                    wSs.writeData((const char *) r3.data(),  r3.size(),  key, thread_idx);
-                    wSs12.writeData((const char *) r12.data(), r12.size(), key, thread_idx);
-                    wAA.writeData((const char *) rAA.data(), rAA.size(), key, thread_idx);
+                        rAA.assign(length * 25, 0);
+                        for (size_t j = 0; j < length; ++j) {
+                            const int a = subMatAA.aa2num[(int)(unsigned char) seq[j]];
+                            memcpy(rAA.data() + j * 25, aaBlock[a < 32 ? a : 0], 25);
+                        }
+                        wSs.writeData((const char *) r3.data(),  r3.size(),  key, thread_idx);
+                        wSs12.writeData((const char *) r12.data(), r12.size(), key, thread_idx);
+                        wAA.writeData((const char *) rAA.data(), rAA.size(), key, thread_idx);
                     }
                     if (context.cache_bytes() > graphCacheBytes) {
                         context.clear_cache();
@@ -642,6 +680,9 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
             wSs.close(true); wSs12.close(true); wAA.close(true);
         }
         reader.close();
+        sortDbByIdOrder(par, ssDb);
+        sortDbByIdOrder(par, ss12Db);
+        sortDbByIdOrder(par, aaTmp);
 
         // the profile db replaces the sequence db but keeps its lookup and source
         const char *keepSuffixes[] = {".lookup", ".source"};
@@ -657,59 +698,19 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
                 FileUtil::move((aaTmp + "_keep" + suffix).c_str(), (outputName + suffix).c_str());
             }
         }
-        Debug(Debug::INFO) << "ModernProst profile db written: " << outputName
-                           << " {,_ss,_ss12} (" << Parameters::DBTYPE_HMM_PROFILE << " = HMM_PROFILE)\n";
         return EXIT_SUCCESS;
 #else
-        Debug(Debug::ERROR) << "Foldseek was compiled without ModernProst support "
-                               "(configure with -DENABLE_PROSTT5=0 -DENABLE_MODERNPROST=1)\n";
-        EXIT(EXIT_FAILURE);
+        Debug(Debug::ERROR) << "Foldseek was compiled without ModernProst support (configure with -DENABLE_MODERNPROST=1)\n";
+        return EXIT_FAILURE;
 #endif
     }
 
     if (par.prostt5Model != "") {
 #ifdef HAVE_PROSTT5
-        // reset set parameters
-        for (size_t i = 0; i < command.params->size(); ++i) {
-            command.params->at(i)->wasSet = false;
-        }
-        par.shuffleDatabase = true;
-        par.PARAM_SHUFFLE.wasSet = true;
-        int origGpu = par.gpu;
-        par.gpu = 0;
-        par.PARAM_GPU.wasSet = true;
-        par.maskMode = 0;
-        par.PARAM_MASK_RESIDUES.wasSet = true;
-        par.maskNrepeats = 0;
-        par.PARAM_MASK_N_REPEAT.wasSet = true;
-        std::vector<const char*> newArgv;
-        newArgv.reserve(argc + 1);
-        for (int i = 0; i < argc; ++i) {
-            const char* arg = argv[i];
-            if (strcmp(arg, par.PARAM_GPU.name) == 0
-             || strcmp(arg, par.PARAM_MASK_RESIDUES.name) == 0
-             || strcmp(arg, par.PARAM_MASK_N_REPEAT.name) == 0) {
-                if (i + 1 < argc) {
-                    ++i;
-                }
-                continue;
-            }
-            if (strcmp(arg, par.PARAM_SHUFFLE.name) == 0) {
-                if (i + 1 < argc && argv[i + 1][0] != '-') {
-                    ++i;
-                }
-                continue;
-            }
-            newArgv.push_back(arg);
-        }
-        int newArgc = static_cast<int>(newArgv.size());
-        newArgv.push_back(NULL);
-        int status = createdb(newArgc, newArgv.data(), command);
+        int status = createSequenceDb(par, argc, argv, command, NULL);
         if (status != EXIT_SUCCESS) {
             return status;
         }
-        fflush(stdout);
-        par.gpu = origGpu;
 
         std::vector<std::string> prefix = { "", "/model" };
         std::vector<std::string> suffix = { "", "/prostt5-f16.gguf" };
@@ -848,17 +849,7 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
         }
         reader.close();
 
-        DBReader<unsigned int> resultReader(ssDb.c_str(), (ssDb+".index").c_str(), par.threads, DBReader<unsigned int>::USE_INDEX|DBReader<unsigned int>::USE_DATA);
-        resultReader.open(DBReader<unsigned int>::NOSORT);
-        resultReader.readMmapedDataInMemory();
-        const std::pair<std::string, std::string> tempDb = Util::databaseNames(ssDb + "_tmp");
-        DBWriter resultWriter(tempDb.first.c_str(), tempDb.second.c_str(), par.threads, par.compressed, resultReader.getDbtype());
-        resultWriter.open();
-        resultWriter.sortDatafileByIdOrder(resultReader);
-        resultWriter.close(true);
-        resultReader.close();
-        DBReader<unsigned int>::removeDb(ssDb);
-        DBReader<unsigned int>::moveDb(tempDb.first, ssDb);
+        sortDbByIdOrder(par, ssDb);
 
         return EXIT_SUCCESS;
 #else

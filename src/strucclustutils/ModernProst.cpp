@@ -9,7 +9,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
-#include <stdexcept>
+#include <cstdlib>
 #include <string>
 #include <map>
 #include <vector>
@@ -17,11 +17,20 @@
 #include <chrono>
 
 namespace {
+// Foldseek is built without exceptions: report like Debug(Debug::ERROR) and EXIT(EXIT_FAILURE)
+[[noreturn]] void fail(const std::string & msg) {
+    fflush(stdout);
+    fprintf(stderr, "%s\n", msg.c_str());
+    exit(EXIT_FAILURE);
+}
+}
+
+namespace {
 
 ggml_tensor * need(ggml_context * ctx, const std::string & name) {
     ggml_tensor * t = ggml_get_tensor(ctx, name.c_str());
     if (t == nullptr) {
-        throw std::runtime_error("ModernProst: missing tensor '" + name + "'");
+        fail("ModernProst: missing tensor '" + name + "'");
     }
     return t;
 }
@@ -77,17 +86,17 @@ ModernProstModel::ModernProstModel(const std::string & gguf_path, const std::str
     gguf_init_params gp = {  true,  &meta };
     gguf = gguf_init_from_file(gguf_path.c_str(), gp);
     if (gguf == nullptr) {
-        throw std::runtime_error("ModernProst: cannot read gguf: " + gguf_path);
+        fail("ModernProst: cannot read gguf: " + gguf_path);
     }
 
     auto u32 = [&](const char * k) {
         const int i = gguf_find_key(gguf, k);
-        if (i < 0) throw std::runtime_error(std::string("ModernProst: missing key ") + k);
+        if (i < 0) fail(std::string("ModernProst: missing key ") + k);
         return gguf_get_val_u32(gguf, i);
     };
     auto f32 = [&](const char * k) {
         const int i = gguf_find_key(gguf, k);
-        if (i < 0) throw std::runtime_error(std::string("ModernProst: missing key ") + k);
+        if (i < 0) fail(std::string("ModernProst: missing key ") + k);
         return gguf_get_val_f32(gguf, i);
     };
 
@@ -104,13 +113,13 @@ ModernProstModel::ModernProstModel(const std::string & gguf_path, const std::str
 
     {
         const int i = gguf_find_key(gguf, "modernprost.attn_layer_types");
-        if (i < 0) throw std::runtime_error("ModernProst: missing attn_layer_types");
+        if (i < 0) fail("ModernProst: missing attn_layer_types");
         const int32_t * d = (const int32_t *) gguf_get_arr_data(gguf, i);
         hp.layer_is_sliding.assign(d, d + gguf_get_arr_n(gguf, i));
     }
     {
         const int i = gguf_find_key(gguf, "modernprost.vocab");
-        if (i < 0) throw std::runtime_error("ModernProst: missing vocab");
+        if (i < 0) fail("ModernProst: missing vocab");
         for (size_t j = 0; j < gguf_get_arr_n(gguf, i); ++j) {
             vocab[gguf_get_arr_str(gguf, i, j)] = (int32_t) j;
         }
@@ -121,9 +130,9 @@ ModernProstModel::ModernProstModel(const std::string & gguf_path, const std::str
         gpu = false;
     } else {
         ggml_backend_dev_t dev = ggml_backend_dev_by_name(device.c_str());
-        if (dev == nullptr) throw std::runtime_error("ModernProst: no ggml device named " + device);
+        if (dev == nullptr) fail("ModernProst: no ggml device named " + device);
         backend = ggml_backend_dev_init(dev, nullptr);
-        if (backend == nullptr) throw std::runtime_error("ModernProst: cannot init backend for " + device);
+        if (backend == nullptr) fail("ModernProst: cannot init backend for " + device);
         gpu = true;
     }
 
@@ -139,11 +148,11 @@ ModernProstModel::ModernProstModel(const std::string & gguf_path, const std::str
         ggml_set_name(dst, name);
     }
     buf_w = ggml_backend_alloc_ctx_tensors(ctx_w, backend);
-    if (buf_w == nullptr) throw std::runtime_error("ModernProst: cannot allocate weights");
+    if (buf_w == nullptr) fail("ModernProst: cannot allocate weights");
 
     {
         FILE * f = fopen(gguf_path.c_str(), "rb");
-        if (f == nullptr) throw std::runtime_error("ModernProst: cannot open " + gguf_path);
+        if (f == nullptr) fail("ModernProst: cannot open " + gguf_path);
         const size_t data_off = gguf_get_data_offset(gguf);
         std::vector<uint8_t> tmp;
         for (int i = 0; i < n_tensors; ++i) {
@@ -154,7 +163,7 @@ ModernProstModel::ModernProstModel(const std::string & gguf_path, const std::str
             tmp.resize(sz);
             if (fseek(f, (long) off, SEEK_SET) != 0 || fread(tmp.data(), 1, sz, f) != sz) {
                 fclose(f);
-                throw std::runtime_error(std::string("ModernProst: short read on ") + name);
+                fail(std::string("ModernProst: short read on ") + name);
             }
             if (gguf_get_tensor_type(gguf, i) == GGML_TYPE_F16 && dst->type == GGML_TYPE_F32) {
                 std::vector<float> up(ggml_nelements(dst));
@@ -222,7 +231,7 @@ ModernProstModel::ModernProstModel(const std::string & gguf_path, const std::str
             std::vector<float> w = get(W);
             const int64_t n_in = W->ne[0], n_out = ggml_nelements(W) / n_in;
             if ((int64_t) s.size() != (by_input ? n_in : n_out)) {
-                throw std::runtime_error(std::string("ModernProst: cannot fold scale into ") + ggml_get_name(W));
+                fail(std::string("ModernProst: cannot fold scale into ") + ggml_get_name(W));
             }
             for (int64_t o = 0; o < n_out; ++o) {
                 for (int64_t i = 0; i < n_in; ++i) {
@@ -260,6 +269,12 @@ ModernProstModel::~ModernProstModel() {
 
 void mp_phase_report();
 ModernProst::ModernProst(ModernProstModel & m, int threads) : model(m), n_threads(threads) {
+    if (ggml_backend_is_cpu(model.backend)) {
+        backend = ggml_backend_cpu_init();
+        own_backend = true;
+    } else {
+        backend = model.backend;
+    }
     static const bool registered = getenv("MP_PHASEPROF") != nullptr && atexit(mp_phase_report) == 0;
     (void) registered;
 }
@@ -269,6 +284,7 @@ ModernProst::~ModernProst() {
         if (kv.second.galloc) ggml_gallocr_free(kv.second.galloc);
         if (kv.second.ctx)    ggml_free(kv.second.ctx);
     }
+    if (own_backend) ggml_backend_free(backend);
 }
 
 int ModernProst::bucket_for(int n) {
@@ -451,7 +467,7 @@ ModernProst::Cached * ModernProst::get_graph(int n_tokens, int n_seq, int slot) 
     ggml_init_params ip = { mem, nullptr, true };
     c.ctx = ggml_init(ip);
     c.gf = build_graph(c, n_tokens, n_seq);
-    c.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(model.backend));
+    c.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
     if (!ggml_gallocr_reserve(c.galloc, c.gf)) {
         ggml_gallocr_free(c.galloc);
         ggml_free(c.ctx);
@@ -475,16 +491,6 @@ void ModernProst::clear_cache() {
         if (kv.second.ctx)    ggml_free(kv.second.ctx);
     }
     cache.clear();
-}
-
-bool ModernProst::run(const std::string & aa,
-                      std::vector<float> & logits_3di,
-                      std::vector<float> & logits_12st) {
-    std::vector<std::vector<float>> b3, b12;
-    if (!run_batch({aa}, b3, b12)) return false;
-    logits_3di  = std::move(b3[0]);
-    logits_12st = std::move(b12[0]);
-    return true;
 }
 
 static double g_ph[8] = {0}; static const char * g_phn[8] =
@@ -574,11 +580,11 @@ bool ModernProst::upload(Staged & st) {
 }
 
 bool ModernProst::compute_async(Staged & st) {
-    if (ggml_backend_is_cpu(model.backend)) {
-        ggml_backend_cpu_set_n_threads(model.backend, n_threads);
+    if (own_backend) {
+        ggml_backend_cpu_set_n_threads(backend, n_threads);
     }
     const double _t = mp_now();
-    const bool ok = ggml_backend_graph_compute_async(model.backend, st.c->gf) == GGML_STATUS_SUCCESS;
+    const bool ok = ggml_backend_graph_compute_async(backend, st.c->gf) == GGML_STATUS_SUCCESS;
     g_ph[6] += mp_now() - _t;
     return ok;
 }
@@ -586,7 +592,7 @@ bool ModernProst::compute_async(Staged & st) {
 bool ModernProst::collect(Staged & st, std::vector<std::vector<float>> & logits_3di,
                           std::vector<std::vector<float>> & logits_12st) {
     double _t = mp_now();
-    ggml_backend_synchronize(model.backend);
+    ggml_backend_synchronize(backend);
     { double t2 = mp_now(); g_ph[3] += t2 - _t; _t = t2; }
     const size_t tot = (size_t) st.n * st.B;
     std::vector<float> a3(tot * 20), a12(tot * 12);
@@ -601,30 +607,6 @@ bool ModernProst::collect(Staged & st, std::vector<std::vector<float>> & logits_
         logits_12st[b].assign(a12.begin() + o * 12, a12.begin() + (o + L) * 12);
     }
     g_ph[4] += mp_now() - _t;
-    return true;
-}
-
-bool ModernProst::run_batch(const std::vector<std::string> & seqs,
-                            std::vector<std::vector<float>> & logits_3di,
-                            std::vector<std::vector<float>> & logits_12st) {
-    Staged st;
-    if (!stage(seqs, st, 0) || !upload(st) || !compute_async(st)) return false;
-    return collect(st, logits_3di, logits_12st);
-}
-
-bool ModernProst::predict(const std::string & aa, std::string & three_di,
-                          std::string & twelve_st, std::string & packed) {
-    std::vector<float> l3, l12;
-    if (!run(aa, l3, l12)) return false;
-    const size_t n = aa.size();
-    three_di.resize(n); twelve_st.resize(n); packed.resize(n);
-    for (size_t t = 0; t < n; ++t) {
-        int a3 = 0;  for (int i = 1; i < 20; ++i) if (l3 [t*20+i] > l3 [t*20+a3]) a3 = i;
-        int a12 = 0; for (int i = 1; i < 12; ++i) if (l12[t*12+i] > l12[t*12+a12]) a12 = i;
-        three_di[t]  = MODERNPROST_3DI_ALPHABET[a3];
-        twelve_st[t] = MODERNPROST_12ST_ALPHABET[a12];
-        packed[t]    = (char) (a3 * 12 + a12);
-    }
     return true;
 }
 
@@ -680,33 +662,6 @@ void logits_to_record(const float * logits, size_t len, int k,
     }
 }
 
-}
-
-bool ModernProst::predict_profiles(const std::string & aa,
-                                   std::vector<uint8_t> & rec_3di,
-                                   std::vector<uint8_t> & rec_12st) {
-    std::vector<float> l3, l12;
-    if (!run(aa, l3, l12)) return false;
-    const size_t len = aa.size();
-    logits_to_record(l3.data(),  len, 20, BACKPROB_3DI,  rec_3di);
-    logits_to_record(l12.data(), len, 12, BACKPROB_12ST, rec_12st);
-    return true;
-}
-
-bool ModernProst::predict_profiles_batch(const std::vector<std::string> & seqs,
-                                         std::vector<std::vector<uint8_t>> & rec_3di,
-                                         std::vector<std::vector<uint8_t>> & rec_12st) {
-    std::vector<std::vector<float>> l3, l12;
-    if (!run_batch(seqs, l3, l12)) return false;
-    const double _t = mp_now();
-    rec_3di.assign(seqs.size(), {});
-    rec_12st.assign(seqs.size(), {});
-    for (size_t b = 0; b < seqs.size(); ++b) {
-        logits_to_record(l3[b].data(),  seqs[b].size(), 20, BACKPROB_3DI,  rec_3di[b]);
-        logits_to_record(l12[b].data(), seqs[b].size(), 12, BACKPROB_12ST, rec_12st[b]);
-    }
-    g_ph[5] += mp_now() - _t;
-    return true;
 }
 
 bool ModernProst::predict_profiles_many(const std::vector<std::string> & seqs,
