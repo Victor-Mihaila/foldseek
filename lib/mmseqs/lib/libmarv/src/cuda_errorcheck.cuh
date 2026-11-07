@@ -21,7 +21,7 @@
 //#define CUDACHECK(ans) { cudaCheck((ans), __FILE__, __LINE__); }
 //#define CUDACHECKASYNC { CUDACHECK((cudaPeekAtLastError()), __FILE__, __LINE__); }
 
-#if defined(__CUDACC__) || defined(__HIPCC__)
+#if defined(__CUDACC__) || defined(__HIPCC__) || defined(__METAL_BACKEND__) || defined(__SIMD_BACKEND__)
 
 #define CUDACHECKIMPL(ans, async) { \
     using namespace std::string_literals; \

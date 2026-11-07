@@ -1,7 +1,12 @@
 #ifndef UTIL_CUH
 #define UTIL_CUH
 
+#if defined(__HIPCC__)
+    #include "hip/hip_runtime.h"
+#endif    
+
 #include "cuda_hip_rename.h"
+#include "stream_ordered_allocation_helper.cuh"
 
 #include "config.hpp"
 #include "hpc_helpers/all_helpers.cuh"
@@ -12,7 +17,14 @@
 #include <thrust/sequence.h>
 #include <thrust/fill.h>
 
+// #if defined(__CUDACC__)
 #include <cuda/std/array>
+#include <cuda/cmath>
+// #elif defined(__HIPCC__)
+// #include <hip/std/array>
+// #endif
+
+
 
 #include "namespace.hpp"
 LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
@@ -153,16 +165,22 @@ public:
     pointer allocate(size_type num){
         //std::cout << "allocate " << num << "\n";
         T* result = nullptr;
-        cudaError_t status = cudaMallocAsync(&result, sizeof(T) * num, stream);
+
+        cudaError_t status = helper_gpuMallocAsync((void**)&result, sizeof(T) * num, stream);
+
         if(status != cudaSuccess){
-            throw std::runtime_error("thrust_async_allocator error allocate");
+            std::string msg = "thrust_async_allocator error allocate: ";
+            msg += cudaGetErrorString(status);
+            throw std::runtime_error(msg);
         }
         return thrust::device_pointer_cast(result);
     }
 
     void deallocate(pointer ptr, size_type /*num*/){
         //std::cout << "deallocate \n";
-        cudaError_t status = cudaFreeAsync(thrust::raw_pointer_cast(ptr), stream);
+        
+        cudaError_t status = helper_gpuFreeAsync((void*)thrust::raw_pointer_cast(ptr), stream);
+
         if(status != cudaSuccess){
             throw std::runtime_error("thrust_async_allocator error deallocate");
         }
@@ -452,25 +470,22 @@ constexpr Datatype mapDatatypeToDatatypeEnum(){
     }
 }
 
-template<Approach approach_, Datatype datatype_>
-struct ApproachAndType{
-    static constexpr Approach approach = approach_;
-    static constexpr Datatype datatype = datatype_;
-
-    using ScoreType = typename std::conditional<
-        ApproachAndType::datatype == Datatype::Half2,
+template<Datatype datatype>
+struct ScoreTypeFromDatatypeE{
+    using type = typename std::conditional<
+        datatype == Datatype::Half2,
         half2,
         typename std::conditional<
-            ApproachAndType::datatype == Datatype::Short2,
+            datatype == Datatype::Short2,
             short2,
             typename std::conditional<
-                ApproachAndType::datatype == Datatype::UInt8x4,
+                datatype == Datatype::UInt8x4,
                 ScoreType_u8x4,
                 typename std::conditional<
-                    ApproachAndType::datatype == Datatype::Float,
+                    datatype == Datatype::Float,
                     float,
                     typename std::conditional<
-                        ApproachAndType::datatype == Datatype::Int,
+                        datatype == Datatype::Int,
                         int,
                         void
                     >::type
@@ -478,6 +493,14 @@ struct ApproachAndType{
             >::type
         >::type
     >::type;
+} ;
+
+template<Approach approach_, Datatype datatype_>
+struct ApproachAndType{
+    static constexpr Approach approach = approach_;
+    static constexpr Datatype datatype = datatype_;
+
+    using ScoreType = typename ScoreTypeFromDatatypeE<datatype_>::type;
 };
 
 __forceinline__
@@ -538,9 +561,44 @@ inline
 thrust::device_vector<char, thrust_async_allocator<char>> allocateTempBuffer(size_t bytes, size_t minimumBytesForRetry, cudaStream_t stream){
 
     thrust::device_vector<char, thrust_async_allocator<char>> result{thrust_async_allocator<char>(stream)};
+
+    
+        // // cudaDeviceSynchronize();
+        // int deviceId;
+        // cudaGetDevice(&deviceId);
+        // cudaMemPool_t mempool;
+        // cudaDeviceGetDefaultMemPool(&mempool, deviceId);
+
+        // size_t reservedpoolmem = 0;
+        // cudaMemPoolGetAttribute(mempool, cudaMemPoolAttrReservedMemCurrent, &reservedpoolmem);
+        // size_t usedpoolmem = 0;
+        // cudaMemPoolGetAttribute(mempool, cudaMemPoolAttrUsedMemCurrent, &usedpoolmem);
+
+        // // std::cerr << "reservedpoolmem " << reservedpoolmem << ", usedpoolmem " << usedpoolmem << "\n";
+
+        // size_t free,total;
+        // cudaMemGetInfo(&free, &total);
+        
+        // if(free > (64 << 20)){
+        //     free -= (64 << 20);
+        // }
+        // std::cerr << "bytes " << bytes << ", free " << free << ", total " << total << ", updatesbytes " << std::min(free, bytes) << "\n";
+        // bytes = std::min(free, bytes);
+    
+
     do{
+        // std::cerr << "try " << bytes << "\n";
         try{
             result.resize(bytes, thrust::no_init);
+            // cudaError_t status = cudaPeekAtLastError();
+            
+            // cudaMemPoolGetAttribute(mempool, cudaMemPoolAttrReservedMemCurrent, &reservedpoolmem);
+            // cudaMemPoolGetAttribute(mempool, cudaMemPoolAttrUsedMemCurrent, &usedpoolmem);
+            // cudaMemGetInfo(&free, &total);
+
+            // std::cerr << cudaGetErrorString(status) << ", reservedpoolmem " << reservedpoolmem << ", usedpoolmem " << usedpoolmem
+            //     << ", free " << free << ", total " << total << "\n";
+            // std::cerr << cudaGetErrorString(status) << "\n";
             return result;
         }catch(...){
             bytes /= 1.5;
@@ -548,7 +606,7 @@ thrust::device_vector<char, thrust_async_allocator<char>> allocateTempBuffer(siz
         }
     }
     while(bytes >= minimumBytesForRetry);
-    
+
     throw std::bad_alloc();
 }
 
@@ -558,6 +616,13 @@ thrust::device_vector<char, thrust_async_allocator<char>> allocateTempBuffer(siz
     thrust::device_vector<char, thrust_async_allocator<char>> result{thrust_async_allocator<char>(stream)};
     result.resize(bytes, thrust::no_init);
     return result;
+}
+
+
+//Buffers that contain sequence data will be padded to simplify vectorized memory accesses
+inline
+size_t getSequenceCharsAllocationSize(size_t bytes){
+    return cuda::round_up(bytes, 32);
 }
 
 

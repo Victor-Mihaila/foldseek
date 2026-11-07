@@ -2,6 +2,7 @@
 #define PSSM_CUH
 
 #include "cuda_hip_rename.h"
+#include "stream_ordered_allocation_helper.cuh"
 
 #include "config.hpp"
 #include "types.hpp"
@@ -538,6 +539,7 @@ struct GpuPermutedPSSMforGapless{
         dim3 block(128,1,1);
         dim3 grid(SDIV(inputView.numColumns, block.x), inputView.numRows, 1);
 
+#if !defined(__METAL_BACKEND__) && !defined(__SIMD_BACKEND__)
         permute_PSSM_for_gapless_kernel_withRelaxChunkSize<<<grid, block, 0, stream>>>(
             resultView,
             inputView,
@@ -547,6 +549,7 @@ struct GpuPermutedPSSMforGapless{
             workVectorLanesPerReg, //number of packed elements per reg for gapless computation
             loadVectorLanesPerReg //number of packed elements per reg for data loading during computation
         ); CUERR;
+#endif
     }
     
 
@@ -605,12 +608,14 @@ struct GpuPermutedPSSMforSW{
         dim3 block(128,1,1);
         dim3 grid(SDIV(inputView.numColumns, block.x), inputView.numRows, 1);
 
+#if !defined(__METAL_BACKEND__) && !defined(__SIMD_BACKEND__)
         permute_PSSM_for_SW_kernel<accessSizeBytes><<<grid, block, 0, stream>>>(
             resultView,
             inputView,
             numRegs,
             groupsize
         ); CUERR;
+#endif
     }
 };
 
@@ -691,7 +696,7 @@ void makeConvertedGpuPssm_gapless(
         }
     }
     T* d_pssm;
-    CUDACHECK(cudaMallocAsync(&d_pssm, sizeof(T) * numRows * queryLength, stream));
+    CUDACHECK(helper_gpuMallocAsync((void**)&d_pssm, sizeof(T) * numRows * queryLength, stream));
     CUDACHECK(cudaMemcpyAsync(d_pssm, h_pssm.data(), sizeof(T) * numRows * queryLength, cudaMemcpyHostToDevice, stream));
 
 
@@ -717,6 +722,7 @@ void makeConvertedGpuPssm_gapless(
     dim3 block(128,1,1);
     dim3 grid(SDIV(unpermutedView.numColumns, block.x), unpermutedView.numRows, 1);
 
+#if !defined(__METAL_BACKEND__) && !defined(__SIMD_BACKEND__)
     permute_PSSM_for_gapless_kernel_withRelaxChunkSize<<<grid, block, 0, stream>>>(
         resultView,
         unpermutedView,
@@ -726,9 +732,10 @@ void makeConvertedGpuPssm_gapless(
         workVectorLanesPerReg, //number of packed elements per reg for gapless computation
         loadVectorLanesPerReg //number of packed elements per reg for data loading during computation
     );
+#endif
     CUDACHECKASYNC;
 
-    CUDACHECK(cudaFreeAsync(d_pssm, stream));
+    CUDACHECK(helper_gpuFreeAsync((void*)d_pssm, stream));
 }
 
 template<class ScoreType, class PssmScoreType, class TT, int groupsize, int numRegs>
@@ -770,7 +777,7 @@ void makeConvertedGpuPssm_sw(
         }
     }
     T* d_pssm;
-    CUDACHECK(cudaMallocAsync(&d_pssm, sizeof(T) * numRows * queryLength, stream));
+    CUDACHECK(helper_gpuMallocAsync((void**)&d_pssm, sizeof(T) * numRows * queryLength, stream));
     CUDACHECK(cudaMemcpyAsync(d_pssm, h_pssm.data(), sizeof(T) * numRows * queryLength, cudaMemcpyHostToDevice, stream));
 
     result.resize<PssmScoreType>(groupsize, numRegs, numRows, queryLength, stream);
@@ -791,15 +798,17 @@ void makeConvertedGpuPssm_sw(
     dim3 grid(SDIV(unpermutedView.numColumns, block.x), unpermutedView.numRows, 1);
 
     constexpr int accessSizeBytes = 16;
+#if !defined(__METAL_BACKEND__) && !defined(__SIMD_BACKEND__)
     permute_PSSM_for_SW_kernel<accessSizeBytes><<<grid, block, 0, stream>>>(
         resultView,
         unpermutedView,
         numRegs,
         groupsize
     );
+#endif
     CUDACHECKASYNC;
 
-    CUDACHECK(cudaFreeAsync(d_pssm, stream));
+    CUDACHECK(helper_gpuFreeAsync((void*)d_pssm, stream));
 }
 
 template<class ScoreType, class PssmScoreType, class TT, int groupsize, int numRegs>
@@ -825,6 +834,7 @@ struct GpuConvertedPSSM{
     helpers::SimpleAllocationDevice<char, 0> data;
 
     std::optional<int> substitutionScoreBias_optional;
+    int gaplessScoreBound = 0; // sum of positive column maxima, an upper bound on every gapless score
 
     template<class ScoreType, class ScalarPssmScoreType>
     void resize_gapless(int groupsize_, int numRegs_, int alphabetSize_, int queryLength_, int allocatedNumRegs_, cudaStream_t stream){
@@ -1001,7 +1011,7 @@ void makeConvertedGpuPssm_gapless(
         }
     }
     T* d_pssm;
-    CUDACHECK(cudaMallocAsync(&d_pssm, sizeof(T) * numRows * queryLength, stream));
+    CUDACHECK(helper_gpuMallocAsync((void**)&d_pssm, sizeof(T) * numRows * queryLength, stream));
     CUDACHECK(cudaMemcpyAsync(d_pssm, h_pssm.data(), sizeof(T) * numRows * queryLength, cudaMemcpyHostToDevice, stream));
 
 
@@ -1027,6 +1037,7 @@ void makeConvertedGpuPssm_gapless(
     dim3 block(128,1,1);
     dim3 grid(SDIV(unpermutedView.numColumns, block.x), unpermutedView.numRows, 1);
 
+#if !defined(__METAL_BACKEND__) && !defined(__SIMD_BACKEND__)
     permute_PSSM_for_gapless_kernel_withRelaxChunkSize<<<grid, block, 0, stream>>>(
         resultView,
         unpermutedView,
@@ -1036,9 +1047,10 @@ void makeConvertedGpuPssm_gapless(
         workVectorLanesPerReg, //number of packed elements per reg for gapless computation
         loadVectorLanesPerReg //number of packed elements per reg for data loading during computation
     );
+#endif
     CUDACHECKASYNC;
 
-    CUDACHECK(cudaFreeAsync(d_pssm, stream));
+    CUDACHECK(helper_gpuFreeAsync((void*)d_pssm, stream));
 }
 
 
@@ -1070,7 +1082,7 @@ void makeConvertedGpuPssm_sw(
         }
     }
     T* d_pssm;
-    CUDACHECK(cudaMallocAsync(&d_pssm, sizeof(T) * numRows * queryLength, stream));
+    CUDACHECK(helper_gpuMallocAsync((void**)&d_pssm, sizeof(T) * numRows * queryLength, stream));
     CUDACHECK(cudaMemcpyAsync(d_pssm, h_pssm.data(), sizeof(T) * numRows * queryLength, cudaMemcpyHostToDevice, stream));
 
     result.resize_sw<PssmScoreType>(groupsize, numRegs, numRows, queryLength, stream);
@@ -1091,15 +1103,17 @@ void makeConvertedGpuPssm_sw(
     dim3 grid(SDIV(unpermutedView.numColumns, block.x), unpermutedView.numRows, 1);
 
     constexpr int accessSizeBytes = 16;
+#if !defined(__METAL_BACKEND__) && !defined(__SIMD_BACKEND__)
     permute_PSSM_for_SW_kernel<accessSizeBytes><<<grid, block, 0, stream>>>(
         resultView,
         unpermutedView,
         numRegs,
         groupsize
     );
+#endif
     CUDACHECKASYNC;
 
-    CUDACHECK(cudaFreeAsync(d_pssm, stream));
+    CUDACHECK(helper_gpuFreeAsync((void*)d_pssm, stream));
 }
 
 

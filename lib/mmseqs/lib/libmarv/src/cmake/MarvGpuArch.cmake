@@ -85,3 +85,8 @@ function(marv_resolve_hip_architectures out_var)
     endif()
     set(${out_var} "${archs}" PARENT_SCOPE)
 endfunction()
+
+
+function(marv_hip_arch_object_gencode arch out_var)
+    set(${out_var} "--offload-arch=${arch}" PARENT_SCOPE)
+endfunction()

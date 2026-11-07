@@ -2,7 +2,7 @@
 #include "benchmarkdata.hpp"
 #include "common.hpp"
 #include "configtuples.hpp"
-#include "benchmark_uint8x4_scoreonly.cuh"
+#include "benchmark_scoreonly.cuh"
 
 #include <vector>
 
@@ -28,7 +28,7 @@ std::vector<BenchmarkData> benchmark_uint8x4_scoreOnly_singleTile(
 
     // using NumItemsTupleFoo = std::tuple<IC<4>, IC<8>, IC<12>, IC<16>>;
 
-    std::vector<BenchmarkData> vec = uint8x4_scoreonly::ForEachCombination_call_singleconfigFunction<
+    std::vector<BenchmarkData> vec = scoreonly::ForEachCombination_call_singleconfigFunction<
         BlockSizeTuple,
         GroupSizeTuple,
         NumItemsTuple,

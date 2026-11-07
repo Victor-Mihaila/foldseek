@@ -41,6 +41,10 @@ using __nv_fp8x2_e4m3 = __hip_fp8x2_e4m3;
 #define cudaFuncAttributeMaxDynamicSharedMemorySize hipFuncAttributeMaxDynamicSharedMemorySize
 #define cudaFuncCachePreferShared hipFuncCachePreferShared
 #define cudaMemPoolAttrReleaseThreshold hipMemPoolAttrReleaseThreshold
+#define cudaMemPoolAttrReservedMemCurrent hipMemPoolAttrReservedMemCurrent
+#define cudaMemPoolAttrUsedMemCurrent hipMemPoolAttrUsedMemCurrent
+
+
 
 #define cudaGetLastError hipGetLastError
 #define cudaPeekAtLastError hipPeekAtLastError
@@ -56,6 +60,8 @@ using __nv_fp8x2_e4m3 = __hip_fp8x2_e4m3;
 #define cudaDeviceSetCacheConfig hipDeviceSetCacheConfig
 #define cudaDeviceGetDefaultMemPool hipDeviceGetDefaultMemPool
 #define cudaMemPoolSetAttribute hipMemPoolSetAttribute
+#define cudaMemPoolTrimTo hipMemPoolTrimTo
+#define cudaMemPoolGetAttribute hipMemPoolGetAttribute
 #define cudaMemGetInfo hipMemGetInfo
 #define cudaMalloc hipMalloc
 #define cudaMallocAsync hipMallocAsync

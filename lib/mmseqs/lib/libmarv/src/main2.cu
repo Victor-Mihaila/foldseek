@@ -13,12 +13,12 @@
 #include "sequence_io.h"
 #include "options.hpp"
 #include "dbdata.hpp"
-// #include "cudasw4.cuh"
+
 #include "config.hpp"
 #include "pssm.cuh"
 #include "convert.cuh"
 #include "target_subject_ids.cuh"
-// #include "benchmarking.cuh"
+
 
 
 #include "searches/score_only_search.cuh"
@@ -824,7 +824,7 @@ int main(int argc, char* argv[])
     // }
 
     int numTopOutputs = options.numTopOutputs;
-    numTopOutputs = std::min(numTopOutputs, libmarv::MaxNumberOfResults::value());
+    // numTopOutputs = std::min(numTopOutputs, libmarv::MaxNumberOfResults::value());
     // std::cout << "Will output up to " << numTopOutputs << " results\n";
 
     libmarv::GpuDatabase gpuDatabase(

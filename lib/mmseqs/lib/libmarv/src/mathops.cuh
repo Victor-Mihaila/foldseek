@@ -337,29 +337,47 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
             return ::max(a,b);
         }
 
-#if defined(__CUDACC__)
+
         //max(a,b)
         __device__
         static Type max(const Type& a, const Type& b, bool* firstIsMax){
+            #if defined(__CUDACC__)
             return __vibmax_s32(a, b, firstIsMax);
+            #else
+            if(a >= b){
+                *firstIsMax = true;
+                return a;
+            }else{
+                *firstIsMax = false;
+                return b;
+            }
+            #endif
         } 
 
         //max(a,b,c)
         __device__
         static Type max3(const Type& a, const Type& b, const Type& c){
+            #if defined(__CUDACC__)
             return __vimax3_s32(a,b,c);
+            #else
+            return max(a, max(b,c));
+            #endif
         }
 
         //max(a+b,c)
         __device__
         static Type add_max(const Type& a, const Type& b, const Type& c){
+            #if defined(__CUDACC__)
             return __viaddmax_s32(a,b,c);
+            #else
+            return max(a+b,c);
+            #endif
         }
 
         //max(a+b,c)
         __device__
         static Type add_max(const Type& a, const Type& b, const Type& c, bool* firstIsMax){
-            return __vibmax_s32(a+b, c, firstIsMax);
+            return max(a+b, c, firstIsMax);
         }
 
         //max(a+b,0)
@@ -371,9 +389,13 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
         //max(max(a + b, c), 0)
         __device__
         static Type add_max_relu(const Type& a, const Type& b, const Type& c){
+            #if defined(__CUDACC__)
             return __viaddmax_s32_relu(a,b,c);
+            #else
+            return max(add_max(a,b,c), 0);
+            #endif
         }    
-#endif
+
         template<class Group>
         __device__
         static Type reduce_max(Group& group, Type val){

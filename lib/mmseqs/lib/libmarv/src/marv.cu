@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <exception>
 #include <memory>
 #include <string>
 #include <vector>
@@ -22,7 +23,28 @@ namespace b64 {
 }
 #include "marv.h"
 
+// score-only search workspace retained between calls, owned by the Marv instance
+struct SearchWorkspaceCache {
+    std::unique_ptr<libmarv::ScoreOnlySearch> search;
+    size_t maxBytes = 0;
 
+    std::unique_ptr<libmarv::ScoreOnlySearch> acquire(libmarv::GpuDatabase& db, int outputSize, int topN, int queries) {
+        const int effectiveOutput = int(std::min(size_t(outputSize), std::max(size_t(1), db.getNumSequences())));
+        const int effectiveTopN = int(std::min(size_t(topN), db.getNumSequences()));
+        if (search && search->kernelOutputArraySize == effectiveOutput
+            && search->maxTopNSize >= effectiveTopN && search->maxNumQueries >= queries) {
+            search->gpuDatabase = &db;
+            search->topNSize = effectiveTopN;
+            return std::move(search);
+        }
+        search.reset();
+        return std::make_unique<libmarv::ScoreOnlySearch>(db, outputSize, topN, queries);
+    }
+    void recycle(std::unique_ptr<libmarv::ScoreOnlySearch> s) {
+        s->releaseQueryResources();
+        if (maxBytes && s->workspaceBytes() <= maxBytes) search = std::move(s);
+    }
+};
 
 std::vector<Marv::Stats> convertSearchResultToMarvResults(
     Marv::Result* results,
@@ -67,22 +89,9 @@ std::vector<Marv::Stats> convertSearchResultToMarvResults(
 
 
 
-static bool allDevicesAreBlackwell(const std::vector<int>& deviceIds){
-    if(deviceIds.empty()){
-        return false;
-    }
-    for(int devId : deviceIds){
-        int ccMajor = 0;
-        cudaDeviceGetAttribute(&ccMajor, cudaDevAttrComputeCapabilityMajor, devId); CUERR
-        if(ccMajor < 12){
-            return false;
-        }
-    }
-    return true;
-}
-
 std::vector<libmarv::SearchResult> do_search_scoreOnly_impl(
     libmarv::GpuDatabase& gpuDatabase, 
+    SearchWorkspaceCache& workspaceCache,
     const std::vector<std::string_view>& queries,
     const std::vector<int8_t*>& queryPssms,
     int topNSize, 
@@ -91,10 +100,10 @@ std::vector<libmarv::SearchResult> do_search_scoreOnly_impl(
     int gex,
     bool int8IsAllowed,
     bool handleOverflows,
-    std::vector<libmarv::ReferenceIdT>* subsetIdsPtr //nullptr if unused
+    std::vector<libmarv::ReferenceIdT>* subsetIdsPtr, //nullptr if unused
+    int pssmRows = 21 //alphabet size of the pssms
 ){
     const std::vector<int>& deviceIds = gpuDatabase.getDeviceIds();
-    int8IsAllowed = int8IsAllowed || allDevicesAreBlackwell(deviceIds);
     
     std::vector<cudaStream_t> streams{cudaStreamPerThread};
     cuda::std::span<cudaStream_t> streamsSpan(streams.data(), streams.size());
@@ -126,11 +135,35 @@ std::vector<libmarv::SearchResult> do_search_scoreOnly_impl(
 
     std::vector<std::unique_ptr<libmarv::MultiConfigScoreOnlyAlignerInterface>> overflowAlignerVector;
     std::vector<libmarv::MultiConfigScoreOnlyAlignerInterface*> overflowAlignerPtrVector;    
+    // one correction pass: the 16-bit retry must be exact, FP16 aligners are not above 2048
+    std::vector<int64_t> scoreBounds(numQueries, 0);
+    if(int8IsAllowed && handleOverflows && scanType == libmarv::ScanType::Gapless){
+        for(int q = 0; q < numQueries; ++q){
+            const size_t length = queries[q].size();
+            for(size_t c = 0; c < length; ++c){
+                int columnMax = 0;
+                for(int r = 0; r < pssmRows; ++r)
+                    columnMax = std::max(columnMax, int(queryPssms[q][size_t(r) * length + c]));
+                scoreBounds[q] += columnMax;
+            }
+        }
+    }
     for(int i = 0; i < numGpus; i++){
         CUDACHECK(cudaSetDevice(deviceIds[i]));
         if(scanType == libmarv::ScanType::Gapless){
             if(int8IsAllowed){
-                overflowAlignerVector.emplace_back(libmarv::make_multiconfig_gapless_aligner_16bit());
+                auto retry = libmarv::make_multiconfig_gapless_aligner_16bit();
+                for(int q = 0; handleOverflows && q < numQueries; ++q){
+                    const auto type = retry->getScoreDatatype(queries[q].size());
+                    const int64_t limit = type == libmarv::Datatype::Half2 ? 2048 :
+                        type == libmarv::Datatype::Short2 ? 32767 :
+                        type == libmarv::Datatype::Float ? 16777216 : std::numeric_limits<int>::max();
+                    if(scoreBounds[q] > limit){
+                        retry = libmarv::make_multiconfig_gapless_aligner_32bit();
+                        break;
+                    }
+                }
+                overflowAlignerVector.emplace_back(std::move(retry));
             }else{
                 overflowAlignerVector.emplace_back(libmarv::make_multiconfig_gapless_aligner_32bit());
             }
@@ -149,11 +182,20 @@ std::vector<libmarv::SearchResult> do_search_scoreOnly_impl(
         const auto& query = queries[queryIndex];
         const int queryLength = query.size();
 
-        queryPssmViews.emplace_back(queryPssms[queryIndex], 21, queryLength);
+        queryPssmViews.emplace_back(queryPssms[queryIndex], pssmRows, queryLength);
     }
 
-    const int kernelOutputArraySize = (int)std::min<size_t>(10'000'000, gpuDatabase.getNumSequences());
-    libmarv::ScoreOnlySearch scoreOnlySearch(gpuDatabase, kernelOutputArraySize, topNSize, numQueries);
+    const int kernelOutputArraySize = scoreOnlyAlignerPtrVector[0]->preferredKernelOutputArraySize();
+    auto search = workspaceCache.acquire(gpuDatabase, kernelOutputArraySize, topNSize, numQueries);
+    struct RecycleSearch {
+        SearchWorkspaceCache& cache;
+        std::unique_ptr<libmarv::ScoreOnlySearch>& search;
+        int exceptions = std::uncaught_exceptions();
+        ~RecycleSearch() { // a failed search is discarded, a successful one retains its workspace
+            if (exceptions == std::uncaught_exceptions()) cache.recycle(std::move(search));
+        }
+    } recycle{workspaceCache, search};
+    auto& scoreOnlySearch = *search;
 
     auto overflowSettings = libmarv::OverflowSettings::withoutOverflowCorrection();
     if(handleOverflows){
@@ -187,6 +229,7 @@ std::vector<libmarv::SearchResult> do_search_scoreOnly_impl(
 
 libmarv::SearchResult do_search_scoreOnly_impl(
     libmarv::GpuDatabase& gpuDatabase, 
+    SearchWorkspaceCache& workspaceCache,
     std::string_view query, 
     int8_t* queryPssm,
     int topNSize, 
@@ -199,6 +242,7 @@ libmarv::SearchResult do_search_scoreOnly_impl(
 ){
     auto resultvector = do_search_scoreOnly_impl(
         gpuDatabase, 
+        workspaceCache,
         std::vector<std::string_view>{query}, std::vector<int8_t*>{queryPssm},
         topNSize, scanType, gop, gex, int8IsAllowed, handleOverflows, subsetIdsPtr
     );
@@ -272,7 +316,7 @@ std::vector<libmarv::SearchResult> do_search_scoreEndpos_impl(
         queryPssmViews.emplace_back(queryPssms[queryIndex], 21, queryLength);
     }
 
-    const int kernelOutputArraySize = (int)std::min<size_t>(10'000'000, gpuDatabase.getNumSequences());
+    constexpr int kernelOutputArraySize = 10'000'000;
     libmarv::ScoreEndposSearch scoreEndposSearch(gpuDatabase, kernelOutputArraySize, topNSize, numQueries);
 
 
@@ -336,8 +380,11 @@ std::vector<libmarv::SearchResult> do_search_scoreOnly_foldseek_impl(
     bool int8IsAllowed,
     bool handleOverflows
 ){
+#if defined(__METAL_BACKEND__) || defined(__SIMD_BACKEND__)
+    throw std::runtime_error("libmarv/Metal: the Foldseek search is not implemented on the Metal backend");
+#else
     const std::vector<int>& deviceIds = gpuDatabase.getDeviceIds();
-    int8IsAllowed = int8IsAllowed || allDevicesAreBlackwell(deviceIds);
+
     std::vector<cudaStream_t> streams{cudaStreamPerThread};
     cuda::std::span<cudaStream_t> streamsSpan(streams.data(), streams.size());
 
@@ -403,7 +450,7 @@ std::vector<libmarv::SearchResult> do_search_scoreOnly_foldseek_impl(
         queryPssmViews_aa12.emplace_back(queryPssms_aa12[queryIndex], 12, queryLength);
     }
 
-    const int kernelOutputArraySize = (int)std::min<size_t>(10'000'000, gpuDatabase.getNumSequences());
+    constexpr int kernelOutputArraySize = 10'000'000;
     constexpr bool isAA20dbTesting = false;
     libmarv::ScoreOnlyFoldseekSearch scoreOnlyFoldseekSearch(isAA20dbTesting, gpuDatabase, kernelOutputArraySize, topNSize, numQueries);
 
@@ -426,6 +473,7 @@ std::vector<libmarv::SearchResult> do_search_scoreOnly_foldseek_impl(
 
     return searchResultPerQuery;
 
+#endif
 }
 
 libmarv::SearchResult do_search_scoreOnly_foldseek_impl(
@@ -470,15 +518,21 @@ libmarv::ScanType mapCswScanType(Marv::AlignmentType type) {
 }
 
 
-Marv::Marv(size_t dbEntries, int alphabetSize) : dbEntries(dbEntries), alphabetSize(alphabetSize), dbmanager(NULL) {
+Marv::Marv(size_t dbEntries, int alphabetSize) : Marv(dbEntries, alphabetSize, MemoryConfig{}) {}
+
+Marv::Marv(size_t dbEntries, int alphabetSize, const MemoryConfig& config)
+    : dbEntries(dbEntries), alphabetSize(alphabetSize), dbmanager(NULL) {
     std::vector<int> deviceIds = getDeviceIds();
     helpers::PeerAccess peerAccess(deviceIds, false);
     peerAccess.enableAllPeerAccesses();
 
     libmarv::GpuDatabase::MemoryConfig memoryConfig;
-    memoryConfig.maxBatchBytes = 128ull * 1024ull * 1024ull;
-    memoryConfig.maxBatchSequences = 10'000'000;
-    memoryConfig.maxGpuMem = std::numeric_limits<size_t>::max();
+    memoryConfig.maxBatchBytes = config.maxBatchBytes;
+    memoryConfig.maxBatchSequences = config.maxBatchSequences;
+    memoryConfig.maxGpuMem = config.maxGpuMem;
+    auto* workspaceCache = new SearchWorkspaceCache();
+    workspaceCache->maxBytes = config.maxCachedQueryBytes;
+    searchWorkspaceVoidPtr = static_cast<void*>(workspaceCache);
 
     const bool verbose = false;
 
@@ -493,8 +547,13 @@ std::vector<std::shared_ptr<libmarv::GpuDatabaseAllocationBase>> allocations_all
 
 Marv::~Marv() {
     allocations_all.clear();
+    delete static_cast<SearchWorkspaceCache*>(searchWorkspaceVoidPtr);
     libmarv::GpuDatabase* gpuDatabase = static_cast<libmarv::GpuDatabase*>(gpuDatabaseVoidPtr);
     delete gpuDatabase;
+}
+
+void Marv::releaseSearchWorkspace() {
+    static_cast<SearchWorkspaceCache*>(searchWorkspaceVoidPtr)->search.reset();
 }
 
 std::vector<int> Marv::getDeviceIds() {
@@ -571,6 +630,7 @@ void Marv::setDbWithAllocation(void* dbhandle, const std::string& allocationinfo
 
     libmarv::GpuDatabase* gpuDatabase = static_cast<libmarv::GpuDatabase*>(gpuDatabaseVoidPtr);
     // OpaqueAllocationManager* manager = static_cast<OpaqueAllocationManager*>(allocationhandle);
+    static_cast<SearchWorkspaceCache*>(searchWorkspaceVoidPtr)->search.reset();
     gpuDatabase->setDatabase(dbPtr, allocations_remote);
 }
 
@@ -579,6 +639,7 @@ void Marv::setDb(void* dbhandle) {
     auto doNothingDeleter = [](libmarv::MMseqsDB*){ /* do nothing */ };
     std::shared_ptr<libmarv::MMseqsDB> dbPtr(static_cast<libmarv::MMseqsDB*>(db), doNothingDeleter);
     libmarv::GpuDatabase* gpuDatabase = static_cast<libmarv::GpuDatabase*>(gpuDatabaseVoidPtr);
+    static_cast<SearchWorkspaceCache*>(searchWorkspaceVoidPtr)->search.reset();
     gpuDatabase->setDatabase(dbPtr);
 }
 
@@ -632,6 +693,15 @@ void Marv::printInfo() {
     libmarv::GpuDatabase* gpuDatabase = static_cast<libmarv::GpuDatabase*>(gpuDatabaseVoidPtr);
     gpuDatabase->printDBInfo();
     gpuDatabase->printDBLengthPartitions();
+}
+
+void Marv::setLetterTranslation(const unsigned char* table) {
+#if defined(__METAL_BACKEND__) || defined(__SIMD_BACKEND__)
+    static_cast<libmarv::GpuDatabase*>(gpuDatabaseVoidPtr)->setLetterTranslation(table);
+#else
+    (void)table;
+    throw std::runtime_error("letter translation is only available on the Metal and SIMD backends; use a padded GPU database");
+#endif
 }
 
 void Marv::prefetch() {
@@ -693,6 +763,7 @@ std::vector<Marv::Stats> Marv::search_scoreOnly(
 
     auto searchResultPerQuery = do_search_scoreOnly_impl(
         *gpuDatabase,
+        *static_cast<SearchWorkspaceCache*>(searchWorkspaceVoidPtr),
         queryViews,
         queryPssms,
         topNSize,
@@ -702,6 +773,9 @@ std::vector<Marv::Stats> Marv::search_scoreOnly(
         int8IsAllowed,
         handleOverflows,
         subsetIdsPtr
+#if defined(__METAL_BACKEND__) || defined(__SIMD_BACKEND__)
+        , alphabetSize
+#endif
     );
 
     std::vector<Marv::Stats> marvStatsVector = convertSearchResultToMarvResults(
@@ -843,6 +917,7 @@ std::vector<Marv::Stats> Marv::search_scoreOnly_then_scoreEndpos_for_tops(
 
     auto scoreOnlyResults = do_search_scoreOnly_impl(
         *gpuDatabase,
+        *static_cast<SearchWorkspaceCache*>(searchWorkspaceVoidPtr),
         queryViews,
         queryPssms,
         topNSize,

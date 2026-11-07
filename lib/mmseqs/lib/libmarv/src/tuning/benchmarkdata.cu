@@ -11,12 +11,19 @@
 #include <iostream>
 
 
+std::string to_string(AlignmentResultKind e){
+    switch(e){
+        case AlignmentResultKind::ScoreOnly: return "ScoreOnly";
+        case AlignmentResultKind::ScoreEndpos: return "ScoreEndpos";
+        default: return "Forgot to name AlignmentResultKind!";
+    }
+}
 
 std::ostream& operator<<(std::ostream& os, const BenchmarkData& data){
 
     os << data.blocksize << " " << data.tilesize << " " << data.groupsize << " " << data.numItems 
         << " " << data.mingcups << " " << data.avggcups << " " << data.maxgcups
-        << " " << data.datatypeString << " " << data.approachString << " " << data.numTiles;
+        << " " << data.datatypeString << " " << data.approachString << " " << data.resultkindString << " " << data.numTiles;
     return os;
 }
 
@@ -45,10 +52,10 @@ void printBenchmarkData_full(std::vector<BenchmarkData> vec, char sep){
     CUDACHECK(cudaDeviceGetAttribute(&smMajor, cudaDevAttrComputeCapabilityMajor, deviceId));
     CUDACHECK(cudaDeviceGetAttribute(&smMinor, cudaDevAttrComputeCapabilityMinor, deviceId));
 
-    const int cudaArch = smMajor * 100 + smMinor * 10;
+    const int gpuArch = smMajor * 100 + smMinor * 10;
 
     std::cout 
-            << "cudaArch"
+            << "gpuArch"
             << sep << "alphabetSize"
             << sep << "blocksize"
             << sep << "tilesize"
@@ -59,12 +66,13 @@ void printBenchmarkData_full(std::vector<BenchmarkData> vec, char sep){
             << sep << "maxgcups"
             << sep << "datatype"
             << sep << "approach"
+            << sep << "resultkind"
             << sep << "numTiles"
             << '\n';
 
     for(const auto& config : vec){
         std::cout 
-            << cudaArch
+            << gpuArch
             << sep << alphabetSize
             << sep << config.blocksize
             << sep << config.tilesize
@@ -75,6 +83,7 @@ void printBenchmarkData_full(std::vector<BenchmarkData> vec, char sep){
             << sep << config.maxgcups
             << sep << config.datatypeString
             << sep << config.approachString
+            << sep << config.resultkindString
             << sep << config.numTiles
             << '\n';
     }
@@ -111,10 +120,10 @@ void printBenchmarkData_bestPerTile(std::vector<BenchmarkData> vec, char sep){
     CUDACHECK(cudaDeviceGetAttribute(&smMajor, cudaDevAttrComputeCapabilityMajor, deviceId));
     CUDACHECK(cudaDeviceGetAttribute(&smMinor, cudaDevAttrComputeCapabilityMinor, deviceId));
 
-    const int cudaArch = smMajor * 100 + smMinor * 10;
+    const int gpuArch = smMajor * 100 + smMinor * 10;
 
     std::cout 
-            << "cudaArch"
+            << "gpuArch"
             << sep << "alphabetSize"
             << sep << "blocksize"
             << sep << "tilesize"
@@ -125,12 +134,13 @@ void printBenchmarkData_bestPerTile(std::vector<BenchmarkData> vec, char sep){
             << sep << "maxgcups"
             << sep << "datatype"
             << sep << "approach"
+            << sep << "resultkind"
             << sep << "numTiles"
             << '\n';
 
     for(const auto& config : vec){
         std::cout 
-            << cudaArch
+            << gpuArch
             << sep << alphabetSize
             << sep << config.blocksize
             << sep << config.tilesize
@@ -141,6 +151,7 @@ void printBenchmarkData_bestPerTile(std::vector<BenchmarkData> vec, char sep){
             << sep << config.maxgcups
             << sep << config.datatypeString
             << sep << config.approachString
+            << sep << config.resultkindString
             << sep << config.numTiles
             << '\n';
     }

@@ -8,13 +8,18 @@ WARNINGS     = -Xcompiler="-Wall -Wextra"
 GPUARCH ?= native
 NVCC_ARCH = -arch=native
 
+MARVDEFS = -DMARV_HAVE_NVIDIA_SM120
+
 ifeq ($(GPUARCH), native)
 	NVCC_ARCH = -arch=native
 else
 	NVCC_ARCH := $(foreach N, $(GPUARCH),-gencode=arch=compute_$(N),code=sm_$(N) )
+	MARVDEFS := $(foreach N, $(GPUARCH),-DMARV_HAVE_NVIDIA_SM$(N))
 endif
 
-NVCC_FLAGS   =  -lineinfo --expt-relaxed-constexpr --extended-lambda -Xcompiler="-fopenmp" #-DCUDASW_DEBUG_CHECK_CORRECTNESS # -rdc=true  #-res-usage #-Xptxas "-v"
+$(info MARVDEFS: $(MARVDEFS))
+
+NVCC_FLAGS   =  $(MARVDEFS) -lineinfo --expt-relaxed-constexpr --extended-lambda -Xcompiler="-fopenmp" #-DCUDASW_DEBUG_CHECK_CORRECTNESS # -rdc=true  #-res-usage #-Xptxas "-v"
 
 
 LDFLAGS      = -Xcompiler="-pthread"  $(NVCC_FLAGS) -lz
@@ -46,56 +51,54 @@ clean :
 COMPILE = $(COMPILER) $(NVCC_FLAGS) $(NVCC_ARCH) $(DIALECT) $(OPTIMIZATION) $(WARNINGS) -c $< -o $@
 COMPILE_MANUAL_ARCH = $(COMPILER) $(NVCC_FLAGS) $(DIALECT) $(OPTIMIZATION) $(WARNINGS) -c $< -o $@
 
-CUDASW_OBJS =  $(BUILDDIR)/sequence_io.o $(BUILDDIR)/dbdata.o $(BUILDDIR)/options.o
+LIBMARV_OBJS =  $(BUILDDIR)/sequence_io.o $(BUILDDIR)/dbdata.o $(BUILDDIR)/options.o $(BUILDDIR)/gpudatabase.o $(BUILDDIR)/dbbatching.o \
+	$(BUILDDIR)/score_only_search.o $(BUILDDIR)/score_endpos_search.o $(BUILDDIR)/score_only_foldseek_search.o
 
 
-CUDASW_OBJS += $(BUILDDIR)/make_aligner.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_sm75.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_sm80.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_sm86.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_sm87.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_sm89.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_sm90.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_sm100.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_sm103.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_sm110.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_sm120.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_sm121.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_defaultptx.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_sm75.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_sm80.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_sm86.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_sm87.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_sm89.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_sm90.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_sm100.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_sm103.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_sm110.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_sm120.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_sm121.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_defaultptx.o
 
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_endpos.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_endpos_sm75.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_endpos_sm80.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_endpos_sm86.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_endpos_sm87.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_endpos_sm89.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_endpos_sm90.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_endpos_sm100.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_endpos_sm103.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_endpos_sm110.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_endpos_sm120.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_endpos_sm121.o
-CUDASW_OBJS += $(BUILDDIR)/make_aligner_endpos_defaultptx.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_endpos.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_endpos_sm75.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_endpos_sm80.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_endpos_sm86.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_endpos_sm87.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_endpos_sm89.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_endpos_sm90.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_endpos_sm100.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_endpos_sm103.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_endpos_sm110.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_endpos_sm120.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_endpos_sm121.o
+LIBMARV_OBJS += $(BUILDDIR)/make_aligner_endpos_defaultptx.o
 
 
 # link object files into executable
-$(ARTIFACT): $(BUILDDIR)/main.o $(CUDASW_OBJS)
+$(ARTIFACT): $(BUILDDIR)/main2.o $(LIBMARV_OBJS)
 	$(COMPILER) $^ -o $(ARTIFACT) $(LDFLAGS)
 
 $(MAKEDB): $(BUILDDIR)/makedb.o $(BUILDDIR)/sequence_io.o $(BUILDDIR)/dbdata.o
 	$(COMPILER) $^ -o $(MAKEDB) $(LDFLAGS)
 
 
-main2: $(BUILDDIR)/main2.o $(CUDASW_OBJS)
+main2: $(BUILDDIR)/main2.o $(LIBMARV_OBJS)
 	$(COMPILER) $^ -o main2 $(LDFLAGS)
 
 $(BUILDDIR)/main2.o : src/main2.cu src/gpudatabase.cuh src/searches/score_only_search.cuh src/searches/score_endpos_search.cuh src/searches/score_only_foldseek_search.cuh
 	$(COMPILE)
 
 
-
-$(BUILDDIR)/main.o : src/main.cu src/sequence_io.h src/length_partitions.hpp src/dbdata.hpp src/cudasw4.cuh src/convert.cuh src/types.hpp src/pssm.cuh
-	$(COMPILE)
 
 $(BUILDDIR)/sequence_io.o : src/sequence_io.cpp src/sequence_io.h
 	$(COMPILE)
@@ -110,6 +113,21 @@ $(BUILDDIR)/makedb.o : src/makedb.cpp src/dbdata.hpp src/sequence_io.h
 	$(COMPILE)
 
 $(BUILDDIR)/marv.o : src/marv.cu src/marv.h src/dbdata.hpp src/gpudatabase.cuh src/config.hpp src/base64.h
+	$(COMPILE)
+
+$(BUILDDIR)/gpudatabase.o : src/gpudatabase.cu src/gpudatabase.cuh
+	$(COMPILE)
+
+$(BUILDDIR)/dbbatching.o : src/dbbatching.cu src/dbbatching.cuh
+	$(COMPILE)
+
+$(BUILDDIR)/score_only_search.o : src/searches/score_only_search.cu src/searches/score_only_search.cuh
+	$(COMPILE)
+
+$(BUILDDIR)/score_endpos_search.o : src/searches/score_endpos_search.cu src/searches/score_endpos_search.cuh
+	$(COMPILE)
+
+$(BUILDDIR)/score_only_foldseek_search.o : src/searches/score_only_foldseek_search.cu src/searches/score_only_foldseek_search.cuh
 	$(COMPILE)
 
 

@@ -1,6 +1,10 @@
 #ifndef LIBMARV_SEQUENCE_MASKING_CUH
 #define LIBMARV_SEQUENCE_MASKING_CUH
 
+//#define WITH_TIMING
+
+#include "hpc_helpers/all_helpers.cuh"
+
 #if defined(__CUDACC__)
 #include <cub/cub.cuh>
 #else
@@ -18,8 +22,15 @@ namespace cub = hipcub;
 #include <cuda/cmath>
 #include <cuda/std/type_traits>
 
+#if defined(__CUDACC__)
+#include <cuda/barrier>
+#endif
+
+
+
 #include "cuda_errorcheck.cuh"
-#include "util.cuh"
+// #include "util.cuh"
+// #include "mathops.cuh"
 
 #if defined(__CUDACC__)
 #include <cooperative_groups.h>
@@ -30,2293 +41,3697 @@ namespace cub = hipcub;
 #include <hip/hip_cooperative_groups.h>
 #endif
 
+#include "cuda_hip_compatibility.cuh"
+
 #include "namespace.hpp"
 LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
 
 
+namespace maskingsinglethread{
 
-template<int blocksize>
-__global__
-void setPaddingBytesKernel(
-    char* d_data,
-    const int* d_lengths,
-    const size_t* d_offsets,
-    int numSegments,
-    char paddingLetter
-){
-    auto group = cooperative_groups::tiled_partition<4>(cooperative_groups::this_thread_block());
-    constexpr int numGroupsInBlock = blocksize / 4;
-    const int numGroupsInGrid = numGroupsInBlock * gridDim.x;
-    const int groupIdInBlock = group.meta_group_rank();
-    const int groupIdInGrid = (threadIdx.x + blockIdx.x * blockDim.x) / 4;
-
-    for(int s = groupIdInGrid; s < numSegments; s += numGroupsInGrid){
-        const size_t offset = d_offsets[s];
-        const int length = d_lengths[s];
-        const int paddedLength = cuda::ceil_div(length, 4) * 4;
-
-        if(length + group.thread_rank() < paddedLength){
-            d_data[offset + length + group.thread_rank()] = paddingLetter;
-        }
+    template<typename T>
+    constexpr bool is_power_of_two(T x){
+        return (x > 0) && ((x & (x - 1)) == 0);
     }
-}
 
 
+    template<int numWarpsInBlock, int maxUintsPerThread>
+    struct SingleTileKernel1Smem{
+        uint32_t elements[numWarpsInBlock][maxUintsPerThread][32+1];        
+        int segmentLengths[numWarpsInBlock][32];
+        size_t segmentOffsets[numWarpsInBlock][32];
+    };
+    
+    template<int blocksize, int maxSegmentLength, class InputOffsetIterator, class InputTransformOp>
+    __global__
+    void singleTileKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp
+    ){
+        __builtin_assume(blockDim.x == blocksize);
+        static_assert(maxSegmentLength % 4 == 0);
+        
+        auto block = cooperative_groups::this_thread_block();
+        auto warp = cooperative_groups::tiled_partition<32>(block);
+        
+        constexpr int numWarpsInBlock = blocksize / 32;
+        const int numWarpsInGrid = numWarpsInBlock * gridDim.x;
+        const int warpIdInBlock = warp.meta_group_rank();
+        const int warpIdInGrid = (threadIdx.x + blockIdx.x * blockDim.x) / 32;
+        
+        constexpr int maxUintsPerThread = maxSegmentLength / 4;
+    
+        using Smem = SingleTileKernel1Smem<numWarpsInBlock, maxUintsPerThread>;
+        extern __shared__ char externsmem[];
+        Smem& smem = *((Smem*)externsmem);
 
-/*
-    Requirements:
-
-*/
-template<class InputDataIterator, class InputOffsetIterator>
-void maskSequences_rle_rld_impl(
-    char* d_outputData,
-    InputDataIterator d_inputData, //returns the letter (char) to consider for masking. each letter must be in range [0, 127]
-    const int* d_inputLengths, //size numInputSequences
-    InputOffsetIterator d_inputOffsets, //size numInputSequences
-    size_t totalInputElements,
-    int numInputSequences,
-    int maskingThreshold, // replace letters in all repeats >= maskingThreshold by masking maskingLetter
-    char maskingLetter,
-    char paddingLetter,
-    cudaStream_t stream
-){
-    using LetterIdTuple = cuda::std::tuple<char, uint16_t>;
-    auto inputDataWithSegmentId = thrust::make_transform_iterator(
-        thrust::make_counting_iterator<size_t>(0),
-        cuda::proclaim_return_type<LetterIdTuple>([=] __device__ (size_t index){
-            char letter = d_inputData[index];
-
-            auto upIter = thrust::upper_bound(thrust::seq, d_inputOffsets, d_inputOffsets + numInputSequences, index);
-            int segmentId = numInputSequences-1;
-            if(upIter != d_inputOffsets + numInputSequences){
-                segmentId = cuda::std::distance(d_inputOffsets, upIter) - 1;
+        auto applyInputTransform = [&](uint32_t data){
+            alignas(4) char elements[4];
+            memcpy(&elements[0], &data, 4);
+            for(int i = 0; i < 4; i++){
+                elements[i] = inputTransformOp(elements[i]);
             }
-            return LetterIdTuple(letter, segmentId % 65536);
-        })
-    );
+            memcpy(&data, &elements[0], 4);
+            return data;
+        };
+    
+    
+        // if(threadIdx.x + blockIdx.x == 0){
+        //     printf("numSegments %d\n", numSegments);
+        // }
+    
+        //each warp processes 32 sequences
+        const int numBatches = cuda::ceil_div(numSegments, 32);
+        for(int batch32 = warpIdInGrid; batch32 < numBatches; batch32 += numWarpsInGrid){
+            const int workSegmentId = batch32 * 32 + warp.thread_rank();
+            int workSegmentLength = 0;
+            size_t workSegmentOffset = 0;
+            if(workSegmentId < numSegments){
+                workSegmentLength = d_lengths[workSegmentId];
+                workSegmentOffset = d_offsets[workSegmentId];
+            }
+            const int workSegmentUints = cuda::ceil_div(workSegmentLength, 4);
+            
+            smem.segmentLengths[warpIdInBlock][warp.thread_rank()] = workSegmentLength;
+            smem.segmentOffsets[warpIdInBlock][warp.thread_rank()] = workSegmentOffset;
+            // if(batch32 == 0){
+            //     printf("workSegmentId %d, workSegmentLength %d, workSegmentOffset %lu\n", 
+            //         workSegmentId, workSegmentLength, workSegmentOffset);
+            // }
+            warp.sync();
+    
+                    
+            {
+               
+    
+                if constexpr(!is_power_of_two(maxUintsPerThread)){
+                    uint32_t temploaded[32];
 
-    // thrust::device_vector<LetterIdTuple> foo(inputDataWithSegmentId, inputDataWithSegmentId + totalInputElements);
-    // std::cout << "foo\n";
-    // for(int i = 0; i< totalInputElements; i++){
-    //     LetterIdTuple t = foo[i];
-    //     std::cout<< "(" << cuda::std::get<0>(t) << "," << cuda::std::get<1>(t) << ")" << " ";
-    // }
-    // std::cout << "\n";
-
-    int numRuns;
-
-
-    // thrust::device_vector<int, thrust_async_allocator<int>> d_numRuns(1, thrust_async_allocator<int>(stream));
-    // //thrust::device_vector<char, thrust_async_allocator<char>> d_runValues(totalInputElements, thrust_async_allocator<char>(stream));
-
-    // thrust::device_vector<LetterIdTuple, thrust_async_allocator<LetterIdTuple>> d_runValues_tuple(totalInputElements, thrust_async_allocator<LetterIdTuple>(stream));
-    // thrust::device_vector<int, thrust_async_allocator<int>> d_runLengths(totalInputElements, thrust_async_allocator<int>(stream));
-
-
-    int* d_numRuns_ptr; 
-    CUDACHECK(cudaMallocAsync(&d_numRuns_ptr, sizeof(int) * 1, stream));
-    // LetterIdTuple* d_runValues_tuple_ptr; 
-    // CUDACHECK(cudaMallocAsync(&d_runValues_tuple_ptr, sizeof(LetterIdTuple) * totalInputElements, stream));
-    char* d_runValues_ptr; 
-    CUDACHECK(cudaMallocAsync(&d_runValues_ptr, sizeof(char) * totalInputElements, stream));
-    uint16_t* d_runValues_segmentIds; 
-    CUDACHECK(cudaMallocAsync(&d_runValues_segmentIds, sizeof(uint16_t) * totalInputElements, stream));
-    int* d_runLengths_ptr; 
-    CUDACHECK(cudaMallocAsync(&d_runLengths_ptr, sizeof(int) * totalInputElements, stream));
-
-
-    auto rle_output = thrust::make_zip_iterator(
-        d_runValues_ptr,
-        d_runValues_segmentIds
-    );
-
-
-    // auto d_nonTupleRunValues = thrust::make_transform_output_iterator(
-    //     d_runValues.begin(),
-    //     cuda::proclaim_return_type<char>([] __device__ (LetterIdTuple tup){
-    //         return cuda::std::get<0>(tup);
-    //     })
-    // );
-
-    size_t cubBytes = 0;
-    CUDACHECK(cub::DeviceRunLengthEncode::Encode(
-        nullptr,
-        cubBytes,
-        inputDataWithSegmentId,
-        rle_output,
-        d_runLengths_ptr,
-        d_numRuns_ptr,
-        totalInputElements,
-        stream
-    ));
-
-    char* d_temp; cudaMallocAsync(&d_temp, cubBytes, stream);
-
-    CUDACHECK(cub::DeviceRunLengthEncode::Encode(
-        d_temp,
-        cubBytes,
-        inputDataWithSegmentId,
-        rle_output,
-        d_runLengths_ptr,
-        d_numRuns_ptr,
-        totalInputElements,
-        stream
-    ));
-    CUDACHECK(cudaFreeAsync(d_temp, stream));
-
-    CUDACHECK(cudaMemcpyAsync(&numRuns, d_numRuns_ptr, sizeof(int), cudaMemcpyDeviceToHost, stream));
-    CUDACHECK(cudaStreamSynchronize(stream));
-    std::cout << "maskSequences: totalInputElements " << totalInputElements << ", numRuns " << numRuns << "\n";
-
-    // std::cout << "d_runLengths\n";
-    // for(int i = 0; i < numRuns; i++){
-    //     std::cout << d_runLengths[i] << " ";
-    // }
-    // std::cout << "\n";
-
-    #if 1
-
-    //run-length decode
-
-    thrust::inclusive_scan(
-        thrust::cuda::par_nosync(thrust_async_allocator<char>(stream)).on(stream),
-        d_runLengths_ptr,
-        d_runLengths_ptr + numRuns,
-        d_runLengths_ptr
-    );
-
-    thrust::transform(
-        thrust::cuda::par_nosync(thrust_async_allocator<char>(stream)).on(stream),
-        thrust::make_counting_iterator<size_t>(1),
-        thrust::make_counting_iterator<size_t>(1) + totalInputElements,
-        d_outputData,
-        cuda::proclaim_copyable_arguments(
-            [
-                runLengthInclPS = d_runLengths_ptr, 
-                d_runValues_ptr,
-                numRuns,
-                maskingThreshold,
-                maskingLetter
-            ] __device__ (size_t index){
-                auto it = thrust::lower_bound(thrust::seq, runLengthInclPS, runLengthInclPS + numRuns, index);
-                const int rle_segment = cuda::std::distance(runLengthInclPS, it);
-                const int rle_length = rle_segment == 0 ? runLengthInclPS[0] : runLengthInclPS[rle_segment] - runLengthInclPS[rle_segment-1];
-                
-                if(rle_length >= maskingThreshold){
-                    return maskingLetter;
+                    if(batch32 != numBatches-1){
+                        for(int loadLane = warp.thread_rank(); loadLane < maxUintsPerThread; loadLane += warp.num_threads()){
+                            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                                const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                                const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                                const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                                if(loadLane < segmentUints){
+                                    temploaded[localLoadSegmentId] = segmentPtr[loadLane];
+                                }
+                            }
+                            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                smem.elements[warpIdInBlock][loadLane][localLoadSegmentId] 
+                                    = applyInputTransform(temploaded[localLoadSegmentId]);
+                            }
+                        }
+                    }else{
+                        const int numSegmentsInBatch = cuda::std::min(32, numSegments - batch32 * 32);
+                        for(int loadLane = warp.thread_rank(); loadLane < maxUintsPerThread; loadLane += warp.num_threads()){
+                            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                if(localLoadSegmentId < numSegmentsInBatch){
+                                    const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                                    const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                                    const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                                    if(loadLane < segmentUints){
+                                        temploaded[localLoadSegmentId] = segmentPtr[loadLane];
+                                    }
+                                }
+                            }
+                            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                smem.elements[warpIdInBlock][loadLane][localLoadSegmentId] 
+                                    = applyInputTransform(temploaded[localLoadSegmentId]);
+                            }
+                        }
+                    }
                 }else{
-                    return d_runValues_ptr[rle_segment];
+                    uint32_t temploaded[maxUintsPerThread];
+                    // #pragma unroll 32
+                    for(int ui = 0; ui < maxUintsPerThread; ui++){
+                        const int k = ui * warp.num_threads() + warp.thread_rank();
+                        const int localLoadSegmentId = k / maxUintsPerThread;
+                        const int loadLane = k % maxUintsPerThread;
+        
+                        // if(localLoadSegmentId < 32){
+                            const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                            const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                            const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                            const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                            if(loadLane < segmentUints){
+                                temploaded[ui] = segmentPtr[loadLane];
+                            }
+                        // }
+                    }
+                    // #pragma unroll 32
+                    for(int ui = 0; ui < maxUintsPerThread; ui++){
+                        const int k = ui * warp.num_threads() + warp.thread_rank();
+                        const int localLoadSegmentId = k / maxUintsPerThread;
+                        const int loadLane = k % maxUintsPerThread;
+        
+                        // if(localLoadSegmentId < 32){
+                            smem.elements[warpIdInBlock][loadLane][localLoadSegmentId] 
+                                = applyInputTransform(temploaded[ui]);
+                        // }
+                    }
                 }
             }
-        )
-    );
-
-
-    #else
-
-        //apply masking letter to runs >= maskingThreshold
-        thrust::scatter_if(
-            thrust::cuda::par_nosync.on(stream),
-            thrust::make_constant_iterator(maskingLetter),
-            thrust::make_constant_iterator(maskingLetter) + numRuns,
-            thrust::make_counting_iterator(0),
-            d_runLengths_ptr,
-            d_runValues_ptr,
-            // thrust::make_transform_output_iterator(
-            //     d_runValues_tuple_ptr,
-            //     cuda::proclaim_return_type<LetterIdTuple>([] __device__ (char letter){
-            //         return LetterIdTuple(letter, 0);
-            //     })
-            // ),
-            [=] __device__ (int runlength){
-                return runlength >= maskingThreshold;
+    
+            warp.sync();
+    
+    
+            #if 1
+            if(workSegmentId < numSegments){
+                char prev = 0;
+                int count = 0;
+                int startOfRun = 0;
+                int numRuns = 0;
+                
+    
+                for(int uintindex = 0; uintindex < workSegmentUints; uintindex++){
+                    uint32_t current4 = smem.elements[warpIdInBlock][uintindex][warp.thread_rank()];
+                    alignas(4) char current4chars[4];
+                    memcpy(&current4chars, &current4, 4);
+    
+                    // if(workSegmentId == 444){
+                    //     printf("uintindex %d, load %2d %2d %2d %2d from %p\n", 
+                    //         uintindex,
+                    //         current4chars[0], current4chars[1], current4chars[2], current4chars[3],
+                    //         (void*)&smem.elements[warpIdInBlock][uintindex][warp.thread_rank()]
+                    //     );
+                    // }
+                    
+                    if(uintindex == 0){
+                        prev = current4chars[0];
+                        //smem.runBeginPositions[warpIdInBlock][numRuns][warp.thread_rank()] = startOfRun;
+                        numRuns++;
+                    }
+                    for(int posIn4 = 0; posIn4 < 4; posIn4++){
+                        const int posInSegment = uintindex * 4 + posIn4;
+                        if(posInSegment < workSegmentLength){
+                            char cur = current4chars[posIn4];
+                            // if(workSegmentId == 444){
+                            //     printf("posInSegment %d, prev %d, prevcount %d, cur %d\n", posInSegment, prev, count, cur);
+                            // }
+                            if(cur == prev){
+                                count++;
+                            }else{
+                                if(count >= maskingThreshold){
+                                        // if(workSegmentId == 444){
+                                        //     printf("masking loop %d - %d\n", startOfRun, posInSegment);
+                                        // }
+    
+                                        #if 1
+                                        for(int i = startOfRun; i < posInSegment; i++){
+                                            const int uindex2 = i / 4;
+                                            const int posui2 = i % 4;
+                                            ((char*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                                        }
+                                        #else
+    
+                                        const int nextborder = cuda::round_up(startOfRun, 4);
+                                        const int lastborder = cuda::round_down(posInSegment, 4);
+    
+                                        for(int i = startOfRun; i < nextborder; i++){
+                                            const int uindex2 = i / 4;
+                                            const int posui2 = i % 4;
+                                            ((char*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                                        }
+    
+                                        for(int i = nextborder; i < lastborder; i += 4){
+                                            const int uindex2 = i / 4;
+                                            ((char4*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[0] 
+                                                = make_char4(maskingLetter, maskingLetter, maskingLetter, maskingLetter);
+                                        }
+    
+                                        for(int i = lastborder; i < posInSegment; i++){
+                                            const int uindex2 = i / 4;
+                                            const int posui2 = i % 4;
+                                            ((char*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                                        }
+    
+                                        #endif
+                                }
+                                prev = cur;
+                                count = 1;
+                                startOfRun = posInSegment;
+    
+                                //smem.runBeginPositions[warpIdInBlock][numRuns][warp.thread_rank()] = startOfRun;
+                                numRuns++;
+                            }
+                        }
+                    }
+                }
+                //handle last run
+                if(count >= maskingThreshold){
+    
+                    // if(workSegmentId == 444){
+                    //     printf("mask last run, startOfRun %d, workSegmentLength %d\n", startOfRun, workSegmentLength);
+                    // }
+                    for(int i = startOfRun; i < workSegmentLength; i++){
+                        const int uindex2 = i / 4;
+                        const int posui2 = i % 4;
+                        ((char*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                    }
+                }
+        
+                if(applyExtraPaddingLetter){
+                    for(int i = workSegmentLength; i < cuda::round_up(workSegmentLength,4); i++){
+                        const int uindex2 = i / 4;
+                        const int posui2 = i % 4;
+                        ((char*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = paddingLetter;
+                    }
+                }
             }
-        );
+            #endif
+    
+            //wait until masking is done in smem
+            warp.sync();
+    
+            //write smem back to gmem (inverse operation of loading )
 
-
-        //run-length decode
-
-        thrust::inclusive_scan(
-            thrust::cuda::par_nosync(thrust_async_allocator<char>(stream)).on(stream),
-            d_runLengths_ptr,
-            d_runLengths_ptr + numRuns,
-            d_runLengths_ptr
-        );
-
-        auto srcLocations = thrust::make_transform_iterator(
-            thrust::counting_iterator<int>(1),
-            cuda::proclaim_return_type<int>([runLengthInclPS = d_runLengths_ptr, numRuns] __device__ (int index){
-                auto it = thrust::lower_bound(thrust::seq, runLengthInclPS, runLengthInclPS + numRuns, index);
-                return int(cuda::std::distance(runLengthInclPS, it));
-            })
-        );
-
-        thrust::gather(
-            thrust::cuda::par_nosync.on(stream),
-            srcLocations,
-            srcLocations + totalInputElements,
-            d_runValues_ptr,
-            // thrust::make_transform_iterator(
-            //     d_runValues_tuple_ptr,
-            //     cuda::proclaim_return_type<char>([] __device__ (LetterIdTuple tup){
-            //         return cuda::std::get<0>(tup);
-            //     })
-            // ),    
-            d_outputData
-        );
-
-    #endif
-
-setPaddingBytesKernel<128><<<cuda::ceil_div(numInputSequences, 128 / 4), 128, 0, stream>>>(
-        d_outputData,
-        d_inputLengths,
-        d_inputOffsets,
-        numInputSequences,
-        paddingLetter
-    );
-    CUDACHECKASYNC;
-
-
-    CUDACHECK(cudaFreeAsync(d_runLengths_ptr, stream));
-    // CUDACHECK(cudaFreeAsync(d_runValues_tuple_ptr, stream));
-    CUDACHECK(cudaFreeAsync(d_runValues_ptr, stream));
-    CUDACHECK(cudaFreeAsync(d_runValues_segmentIds, stream));
-    CUDACHECK(cudaFreeAsync(d_numRuns_ptr, stream));
-}
-
-
-
-
-/*
-    Requirements:
-
-*/
-template<class InputDataIterator, class InputOffsetIterator>
-void maskSequences_simple_for_each_impl(
-    char* d_outputData,
-    InputDataIterator d_inputData, //returns the letter (char) to consider for masking. each letter must be in range [0, 127]
-    const int* d_inputLengths, //size numInputSequences
-    InputOffsetIterator d_inputOffsets, //size numInputSequences
-    size_t totalInputElements,
-    int numInputSequences,
-    int maskingThreshold, // replace letters in all repeats >= maskingThreshold by masking maskingLetter
-    char maskingLetter,
-    char paddingLetter,
-    cudaStream_t stream
-){
-    using LetterIdTuple = cuda::std::tuple<char, int>;
-    auto inputDataWithSegmentId = thrust::make_transform_iterator(
-        thrust::make_counting_iterator<size_t>(0),
-        cuda::proclaim_return_type<LetterIdTuple>([=] __device__ (size_t index){
-            char letter = d_inputData[index];
-
-            auto upIter = thrust::upper_bound(thrust::seq, d_inputOffsets, d_inputOffsets + numInputSequences, index);
-            int segmentId = numInputSequences-1;
-            if(upIter != d_inputOffsets + numInputSequences){
-                segmentId = cuda::std::distance(d_inputOffsets, upIter) - 1;
+            #if 1
+            for(int ui = 0; ui < maxUintsPerThread; ui++){
+                const int k = ui * warp.num_threads() + warp.thread_rank();
+                const int localLoadSegmentId = k / maxUintsPerThread;
+                const int loadLane = k % maxUintsPerThread;
+    
+                // if(localLoadSegmentId < 32){
+                    const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                    const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                    uint32_t* const segmentPtr = (uint32_t*)(d_outputData + segmentOffset);
+                    if(loadLane < segmentUints){
+                        segmentPtr[loadLane] = smem.elements[warpIdInBlock][loadLane][localLoadSegmentId];
+                    }
+                // }
             }
-            return LetterIdTuple(letter, segmentId);
-        })
-    );
+            #else
 
-    thrust::for_each(
-        thrust::cuda::par_nosync(thrust_async_allocator<char>(stream)).on(stream),
-        thrust::make_counting_iterator<int64_t>(0),
-        thrust::make_counting_iterator<int64_t>(0) + totalInputElements,
-        [
+            const int numSegmentsInBatch = cuda::std::min(32, numSegments - batch32 * 32);
+            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                // if(localLoadSegmentId < numSegmentsInBatch){
+                    const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                    const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                    uint32_t* const segmentPtr = (uint32_t*)(d_outputData + segmentOffset);
+
+                    for(int loadLane = warp.thread_rank(); loadLane < segmentUints; loadLane += warp.num_threads()){
+                        segmentPtr[loadLane] = smem.elements[warpIdInBlock][loadLane][localLoadSegmentId];
+                    }
+                // }
+            }
+
+            #endif
+    
+            //wait until smem can be re-used
+            warp.sync();
+    
+        }
+    }
+    
+    
+    template<int blocksize, int maxSegmentLength, class InputOffsetIterator, class InputTransformOp>
+    void callSingleTileKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp,
+        cudaStream_t stream
+    ){
+        int deviceId;
+        int numSMs;
+        CUDACHECK(cudaGetDevice(&deviceId));
+        CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
+
+        int maxBlocksPerSM = 0;
+    
+        constexpr int maxUintsPerThread = maxSegmentLength / 4;
+        constexpr int numWarpsInBlock = blocksize / 32;
+        auto kernel = singleTileKernel<blocksize, maxSegmentLength, InputOffsetIterator, InputTransformOp>;
+        using SmemType = SingleTileKernel1Smem<numWarpsInBlock, maxUintsPerThread>;
+    
+        int smembytes = sizeof(SmemType);
+    
+        if(smembytes > 48*1024){
+            cudaError_t status = cudaFuncSetAttribute(reinterpret_cast<const void*>(kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, smembytes);
+            if(status != cudaSuccess){
+                cudaGetLastError();
+                throw std::runtime_error("Unable to set cudaFuncAttributeMaxDynamicSharedMemorySize to " + std::to_string(smembytes));
+            }
+        }
+    
+        CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &maxBlocksPerSM,
+            kernel,
+            blocksize, 
+            smembytes
+        ));
+        
+        const int numBlocks = numSMs * maxBlocksPerSM;
+        
+        // std::cout << "numSegments "  << numSegments << ", num blocks " << numBlocks << "\n";
+    
+        #ifdef WITH_TIMING
+        helpers::GpuTimer timer1("maskingsinglethread::singleTileKernel<" + std::to_string(blocksize) + "," + std::to_string(maxSegmentLength) + ">");
+        #endif
+        kernel<<<numBlocks, blocksize, smembytes, stream>>>(
+            d_outputData,
+            d_lengths,
+            d_offsets,
+            d_inputData,
+            numSegments,
             maskingThreshold,
             maskingLetter,
-            inputDataWithSegmentId,
-            totalInputElements,
-            d_outputData
-        ]__device__ (int64_t index){
-            const LetterIdTuple myData = inputDataWithSegmentId[index];
+            applyExtraPaddingLetter,
+            paddingLetter,
+            inputTransformOp
+        );
 
-            int countLeft = 0;
-            int countRight = 0;
-
-            //check to the left
-            for(int64_t i = index - 1; i > index - maskingThreshold; i--){
-                if(i < 0){
-                    break;
-                }
-                auto other = inputDataWithSegmentId[i];
-                if(other == myData){
-                    countLeft++;
-                }else{
-                    break;
-                }
-            }
-
-            //check to the right
-            for(int64_t i = index + 1; i < index + maskingThreshold; i++){
-                if(i >= totalInputElements){
-                    break;
-                }
-                auto other = inputDataWithSegmentId[i];
-                if(other == myData){
-                    countRight++;
-                }else{
-                    break;
-                }
-            }
-
-            int count = countLeft + 1 + countRight;
-            if(count >= maskingThreshold){
-                d_outputData[index] = maskingLetter;
-            }else{
-                d_outputData[index] = cuda::std::get<0>(myData);
-            }
-        }
-    );
-
-
-    setPaddingBytesKernel<128><<<cuda::ceil_div(numInputSequences, 128 / 4), 128, 0, stream>>>(
-        d_outputData,
-        d_inputLengths,
-        d_inputOffsets,
-        numInputSequences,
-        paddingLetter
-    );
-    CUDACHECKASYNC;
-
-}
-
-
-
-template<int maximumMaskingThreshold, class InputDataIterator, class SegmentIdIterator>
-__global__
-void maskingKernel(
-    char* d_outputData,
-    InputDataIterator d_inputData,
-    SegmentIdIterator d_segmentIds,
-    int64_t totalInputElements,
-    int maskingThreshold,
-    char maskingLetter
-){
-
-    using LetterIdTuple = cuda::std::tuple<char, int>;
-    constexpr int64_t maxChunkSize = 1024;
-    constexpr int smemElements = maxChunkSize + 2 * (maximumMaskingThreshold-1);
-    __shared__ char smem_letters[smemElements];
-    __shared__ int smem_segmentIds[smemElements];
-
-    const int64_t numChunks = cuda::ceil_div(totalInputElements, maxChunkSize);
-
-    for(int64_t chunkId = blockIdx.x; chunkId < numChunks; chunkId += gridDim.x){
-        const int64_t chunkBegin = chunkId * maxChunkSize;
-        const int64_t chunkEnd_excl = cuda::std::min(totalInputElements, (chunkId+1) * maxChunkSize);
-        // const int chunkSize = chunkEnd_excl - chunkBegin;
-
-        const int64_t loadBegin = cuda::std::max(int64_t(0), chunkBegin - (maximumMaskingThreshold-1));
-        const int64_t loadEnd_excl = cuda::std::min(totalInputElements, chunkEnd_excl + (maximumMaskingThreshold-1));
-        const int elementsToLoad = loadEnd_excl - loadBegin;
-
-        // if(threadIdx.x == 0){
-            
-        //     if(elementsToLoad > smemElements){
-        //         printf("loadBegin %ld, chunkBegin %lu, chunkEnd_excl %lu, loadEnd_excl %ld, elementsToLoad %d, smemElements %d\n", 
-        //             loadBegin, chunkBegin, chunkEnd_excl, loadEnd_excl, elementsToLoad, smemElements);
-        //     }
-        //     assert(elementsToLoad <= smemElements);
-        // }
-
-        //load chunk to shared memory
-        __syncthreads();
-        for(int64_t i = loadBegin + threadIdx.x; i < loadEnd_excl; i += blockDim.x){
-            smem_letters[i - loadBegin] = d_inputData[i];
-            smem_segmentIds[i - loadBegin] = d_segmentIds[i];
-        }
-        __syncthreads();
-
-        //process chunk
-        for(int64_t element = chunkBegin + threadIdx.x; element < chunkEnd_excl; element += blockDim.x){
-            const int indexInSmem = element - loadBegin;
-            const char myLetter = smem_letters[indexInSmem];
-            const int mySegmentId = smem_segmentIds[indexInSmem];
-
-            int count = 1; //account for my letter
-            //check to the left
-            for(int i = indexInSmem - 1; i > indexInSmem - maskingThreshold; i--){
-                if(i < 0){
-                    break;
-                }
-                const char otherLetter = smem_letters[i];
-                const int otherSegmentId = smem_segmentIds[i];
-                if(myLetter == otherLetter && mySegmentId == otherSegmentId){
-                    count++;
-                }else{
-                    break;
-                }
-            }
-
-            //check to the right
-            for(int64_t i = indexInSmem + 1; i < indexInSmem + maskingThreshold; i++){
-                if(i >= elementsToLoad){
-                    break;
-                }
-                const char otherLetter = smem_letters[i];
-                const int otherSegmentId = smem_segmentIds[i];
-                if(myLetter == otherLetter && mySegmentId == otherSegmentId){
-                    count++;
-                }else{
-                    break;
-                }
-            }
-
-
-            if(count >= maskingThreshold){
-                d_outputData[element] = maskingLetter;
-            }else{
-                d_outputData[element] = myLetter;
-            }
-        }
-
+        #ifdef WITH_TIMING
+        timer1.print();
+        #endif
     }
-}
-
-/*
-    Requirements:
-
-*/
-template<int maximumMaskingThreshold, class InputDataIterator, class InputOffsetIterator>
-void maskSequences_custom_kernel_impl(
-    char* d_outputData,
-    InputDataIterator d_inputData, //returns the letter (char) to consider for masking. each letter must be in range [0, 127]
-    const int* d_inputLengths, //size numInputSequences
-    InputOffsetIterator d_inputOffsets, //size numInputSequences
-    size_t totalInputElements,
-    int numInputSequences,
-    int maskingThreshold, // replace letters in all repeats >= maskingThreshold by masking maskingLetter
-    char maskingLetter,
-    char paddingLetter,
-    cudaStream_t stream
-){
-    assert(maskingThreshold <= maximumMaskingThreshold);
-
-    auto d_segmentIds = thrust::make_transform_iterator(
-        thrust::make_counting_iterator<size_t>(0),
-        cuda::proclaim_return_type<int>([=] __device__ (size_t index){
-            auto upIter = thrust::upper_bound(thrust::seq, d_inputOffsets, d_inputOffsets + numInputSequences, index);
-            int segmentId = numInputSequences-1;
-            if(upIter != d_inputOffsets + numInputSequences){
-                segmentId = cuda::std::distance(d_inputOffsets, upIter) - 1;
-            }
-            return segmentId;
-        })
-    );
-
-    int deviceId;
-    int numSMs;
-    int maxBlocksPerSM = 0;
-    constexpr int blocksize = 128;
-    auto kernel = maskingKernel<maximumMaskingThreshold, InputDataIterator, decltype(d_segmentIds)>;
-
-    CUDACHECK(cudaGetDevice(&deviceId));
-    CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
-    CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-        &maxBlocksPerSM,
-        kernel,
-        blocksize, 
-        0
-    ));
-
-    kernel<<<numSMs*maxBlocksPerSM, blocksize, 0, stream>>>(
-        d_outputData,
-        d_inputData,
-        d_segmentIds,
-        totalInputElements,
-        maskingThreshold,
-        maskingLetter
-    );
-    CUDACHECKASYNC;
-
-    setPaddingBytesKernel<128><<<cuda::ceil_div(numInputSequences, 128 / 4), 128, 0, stream>>>(
-        d_outputData,
-        d_inputLengths,
-        d_inputOffsets,
-        numInputSequences,
-        paddingLetter
-    );
-    CUDACHECKASYNC;
-
-}
 
 
+    template<int numWarpsInBlock, int maxUintsPerThread>
+    struct SingleTileWithPlainFlagsKernel1Smem{
+        uint32_t elements[numWarpsInBlock][maxUintsPerThread][32+1];        
+        int segmentLengths[numWarpsInBlock][32];
+        size_t segmentOffsets[numWarpsInBlock][32];
+    };
 
+    template<int blocksize, int maxMaskingThreshold, int maxSegmentLength, class InputOffsetIterator, class InputTransformOp>
+    __global__
+    void singleTileWithPlainFlagsKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp
+    ){
+        __builtin_assume(blockDim.x == blocksize);
+        static_assert(maxSegmentLength % 4 == 0);
+        
+        auto block = cooperative_groups::this_thread_block();
+        auto warp = cooperative_groups::tiled_partition<32>(block);
+        
+        constexpr int numWarpsInBlock = blocksize / 32;
+        const int numWarpsInGrid = numWarpsInBlock * gridDim.x;
+        const int warpIdInBlock = warp.meta_group_rank();
+        const int warpIdInGrid = (threadIdx.x + blockIdx.x * blockDim.x) / 32;
+        
+        constexpr int maxUintsPerThread = maxSegmentLength / 4;
+        constexpr int maxMaskingHaloUints = cuda::ceil_div(maxMaskingThreshold, 4);
 
+        const int maskingHaloUints = cuda::ceil_div(maskingThreshold, 4);
+        __builtin_assume(maskingThreshold <= maxMaskingThreshold);
+        __builtin_assume(maskingHaloUints <= maxMaskingHaloUints);
     
-template<int maximumMaskingThreshold, int maximumChunkSize, class InputDataIterator, class SegmentIdIterator>
-__global__
-void maskingKernel2(
-    char* d_outputData,
-    InputDataIterator d_inputData,
-    SegmentIdIterator d_segmentIds,
-    int64_t totalInputElements,
-    int maskingThreshold,
-    char maskingLetter
-){
+        using Smem = SingleTileWithPlainFlagsKernel1Smem<numWarpsInBlock, maxUintsPerThread>;
+        extern __shared__ char externsmem[];
+        Smem& smem = *((Smem*)externsmem);
 
-    using LetterIdTuple = cuda::std::tuple<char, int>;
-    constexpr int64_t maxChunkSize = maximumChunkSize;
-    constexpr int smemElements = maxChunkSize + 2 * (maximumMaskingThreshold-1);
 
-    struct Pair{
-        char letter;
-        uint16_t id;
-    };
-    __shared__ Pair smem_pairs[smemElements];
-
-    const int64_t numChunks = cuda::ceil_div(totalInputElements, maxChunkSize);
-
-    for(int64_t chunkId = blockIdx.x; chunkId < numChunks; chunkId += gridDim.x){
-        const int64_t chunkBegin = chunkId * maxChunkSize;
-        const int64_t chunkEnd_excl = cuda::std::min(totalInputElements, (chunkId+1) * maxChunkSize);
-        // const int chunkSize = chunkEnd_excl - chunkBegin;
-
-        const int64_t loadBegin = cuda::std::max(int64_t(0), chunkBegin - (maximumMaskingThreshold-1));
-        const int64_t loadEnd_excl = cuda::std::min(totalInputElements, chunkEnd_excl + (maximumMaskingThreshold-1));
-        const int elementsToLoad = loadEnd_excl - loadBegin;
-
-        // if(threadIdx.x == 0){
-            
-        //     if(elementsToLoad > smemElements){
-        //         printf("loadBegin %ld, chunkBegin %lu, chunkEnd_excl %lu, loadEnd_excl %ld, elementsToLoad %d, smemElements %d\n", 
-        //             loadBegin, chunkBegin, chunkEnd_excl, loadEnd_excl, elementsToLoad, smemElements);
-        //     }
-        //     assert(elementsToLoad <= smemElements);
-        // }
-
-        //load chunk to shared memory
-        __syncthreads();
-        for(int64_t i = loadBegin + threadIdx.x; i < loadEnd_excl; i += blockDim.x){
-            Pair p;
-            p.letter = d_inputData[i];
-            // p.id = d_segmentIds[i] % (65536);
-            p.id = d_segmentIds[i];
-            smem_pairs[i - loadBegin] = p;
-        }
-        __syncthreads();
-
-        //process chunk
-        for(int64_t element = chunkBegin + threadIdx.x; element < chunkEnd_excl; element += blockDim.x){
-            const int indexInSmem = element - loadBegin;
-            const Pair myPair = smem_pairs[indexInSmem];
-            const char myLetter = myPair.letter;
-            const int mySegmentId = myPair.id;
-
-            int count = 1; //account for my letter
-            //check to the left
-            for(int i = indexInSmem - 1; i > indexInSmem - maskingThreshold; i--){
-                if(i < 0){
-                    break;
-                }
-                const Pair otherPair = smem_pairs[i];
-                const char otherLetter = otherPair.letter;
-                const int otherSegmentId = otherPair.id;
-                if(myLetter == otherLetter && mySegmentId == otherSegmentId){
-                    count++;
-                }else{
-                    break;
-                }
+        auto applyInputTransform = [&](uint32_t data){
+            alignas(4) char elements[4];
+            memcpy(&elements[0], &data, 4);
+            for(int i = 0; i < 4; i++){
+                elements[i] = inputTransformOp(elements[i]);
             }
-
-            //check to the right
-            for(int64_t i = indexInSmem + 1; i < indexInSmem + maskingThreshold; i++){
-                if(count >= maskingThreshold){
-                    break;
-                }
-                if(i >= elementsToLoad){
-                    break;
-                }
-                const Pair otherPair = smem_pairs[i];
-                const char otherLetter = otherPair.letter;
-                const int otherSegmentId = otherPair.id;
-                if(myLetter == otherLetter && mySegmentId == otherSegmentId){
-                    count++;
-                }else{
-                    break;
-                }
-            }
-
-            // if(element >= 736120 && element < 736130){
-            //     printf("element %ld, letter %d, count %d\n", element, int(myLetter), count);
-            // }
-
-
-            if(count >= maskingThreshold){
-                d_outputData[element] = maskingLetter;
-            }else{
-                d_outputData[element] = myLetter;
-            }
-        }
-
-    }
-}
-
-
-
-
-template<int maximumMaskingThreshold, class InputDataIterator, class InputOffsetIterator>
-void maskSequences_custom_kernel_impl2(
-    char* d_outputData,
-    InputDataIterator d_inputData, //returns the letter (char) to consider for masking. each letter must be in range [0, 127]
-    const int* d_inputLengths, //size numInputSequences
-    InputOffsetIterator d_inputOffsets, //size numInputSequences
-    size_t totalInputElements,
-    int numInputSequences,
-    int maskingThreshold, // replace letters in all repeats >= maskingThreshold by masking maskingLetter
-    char maskingLetter,
-    char paddingLetter,
-    cudaStream_t stream
-){
-    assert(maskingThreshold <= maximumMaskingThreshold);
-
-    // auto d_segmentIds = thrust::make_transform_iterator(
-    //     thrust::make_counting_iterator<size_t>(0),
-    //     cuda::proclaim_return_type<int>([=] __device__ (size_t index){
-    //         auto upIter = thrust::upper_bound(thrust::seq, d_inputOffsets, d_inputOffsets + numInputSequences, index);
-    //         int segmentId = numInputSequences-1;
-    //         if(upIter != d_inputOffsets + numInputSequences){
-    //             segmentId = cuda::std::distance(d_inputOffsets, upIter) - 1;
-    //         }
-    //         return segmentId;
-    //     })
-    // );
-
-    //we only need to distinguish segments in each subchunk in the kernel, ushort is sufficient and provides safe wrap-around for the scan.
-    constexpr int maximumChunkSize = 1024;
-    uint16_t* d_segmentIds; 
-    CUDACHECK(cudaMallocAsync(&d_segmentIds, sizeof(uint16_t) * totalInputElements, stream));
-    CUDACHECK(cudaMemsetAsync(d_segmentIds, 0, sizeof(uint16_t) * totalInputElements, stream));
-    thrust::scatter(
-        thrust::cuda::par_nosync.on(stream),
-        thrust::make_constant_iterator<uint16_t>(1),
-        thrust::make_constant_iterator<uint16_t>(1) + numInputSequences,
-        d_inputOffsets,
-        d_segmentIds
-    );
-    thrust::inclusive_scan(
-        thrust::cuda::par_nosync(thrust_async_allocator<char>(stream)).on(stream),
-        d_segmentIds,
-        d_segmentIds + totalInputElements,
-        d_segmentIds
-    );
-
-    int deviceId;
-    int numSMs;
-    int maxBlocksPerSM = 0;
-    constexpr int blocksize = 128;
-    auto kernel = maskingKernel2<maximumMaskingThreshold, maximumChunkSize, InputDataIterator, decltype(d_segmentIds)>;
-
-    CUDACHECK(cudaGetDevice(&deviceId));
-    CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
-    CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-        &maxBlocksPerSM,
-        kernel,
-        blocksize, 
-        0
-    ));
-
-    kernel<<<numSMs*maxBlocksPerSM, blocksize, 0, stream>>>(
-        d_outputData,
-        d_inputData,
-        d_segmentIds,
-        totalInputElements,
-        maskingThreshold,
-        maskingLetter
-    );
-    CUDACHECKASYNC;
-
-    setPaddingBytesKernel<128><<<cuda::ceil_div(numInputSequences, 128 / 4), 128, 0, stream>>>(
-        d_outputData,
-        d_inputLengths,
-        d_inputOffsets,
-        numInputSequences,
-        paddingLetter
-    );
-    CUDACHECKASYNC;
-
-    CUDACHECK(cudaFreeAsync(d_segmentIds, stream));
-
-}
-
-
-
-
-template<int blocksize, class InputDataIterator, class SegmentIdIterator>
-__global__
-void maskingKernel3(
-    char* d_outputData,
-    InputDataIterator d_inputData,
-    SegmentIdIterator d_segmentIds,
-    int64_t totalInputElements,
-    int maskingThreshold,
-    char maskingLetter
-){
-    __builtin_assume(blocksize == blockDim.x);
-
-    struct RunIdCountPair{
-        int runId;
-        int count;
-    };
-    struct RunIdCountPairScanOp{
-        __device__
-        RunIdCountPair operator()(const RunIdCountPair& left, const RunIdCountPair& right) const{
-            RunIdCountPair result;
-            result.runId = right.runId;
-            if(left.runId == right.runId){
-                result.count = right.count + left.count;
-            }else{
-                result.count = right.count;                
-            }
-            return result;
-        }
-    };
-
-    constexpr uint32_t oob_element = 0xFFFFFFFF;
-
-
-
-    constexpr int items_per_thread = 16;
-    constexpr int items_per_block = blocksize * items_per_thread;
-
-    using BlockExchange = cub::BlockExchange<uint32_t, blocksize, items_per_thread>;
-    using BlockDiscontinuity = cub::BlockDiscontinuity<uint32_t, blocksize>;
-    using BlockScanInt = cub::BlockScan<int, blocksize>;
-    using BlockScanPair = cub::BlockScan<RunIdCountPair, blocksize>;
+            memcpy(&data, &elements[0], 4);
+            return data;
+        };
     
-
-    __shared__ struct{
-        typename BlockExchange::TempStorage temp_exchange;
-        typename BlockDiscontinuity::TempStorage temp_discontinuity;
-        typename BlockScanInt::TempStorage temp_scanInt;
-        typename BlockScanPair::TempStorage temp_scanPair;
-    } temp;
-
-    __shared__ char smem_letters[items_per_block];
-    __shared__ int smem_runLengths[items_per_block];
-
-
-
-    /*
-        Example for chunking: with 2048 items per block and maskingThreshold == 3, 2045 is the last index that could be 
-        the start of a run to mask in the current chunk. index 2046 has to be checked by the next chunk. Thus, next chunk
-        needs to start at index 2044 to check if 2046 is the end of a run to mask.
-    */
-
-    for(int64_t chunkBegin = blockIdx.x * (items_per_block - 2*(maskingThreshold - 1)) ; 
-            chunkBegin < totalInputElements; 
-            chunkBegin += gridDim.x * (items_per_block - 2*(maskingThreshold - 1))){
-
-        const int64_t chunkEnd_excl = cuda::std::min(totalInputElements, chunkBegin + items_per_block);
-        // const int64_t numInChunk = chunkEnd_excl - chunkBegin;
-
-        uint32_t myElements[items_per_thread];        
-
-        #pragma unroll
-        for(int i = 0; i < items_per_thread; i++){
-            const int loadIndex = chunkBegin + i * blockDim.x + threadIdx.x;
-            if(loadIndex < chunkEnd_excl){
-                uint32_t letter = d_inputData[loadIndex];
-                //uint32_t id = d_segmentIds[loadIndex] % (65536);
-                uint32_t id = d_segmentIds[loadIndex];
-                uint32_t element = (letter << 16) | id;
-                myElements[i] = element;
-            }else{
-                myElements[i] = oob_element;
+    
+        // if(threadIdx.x + blockIdx.x == 0){
+        //     printf("numSegments %d\n", numSegments);
+        // }
+    
+        //each warp processes 32 sequences
+        const int numBatches = cuda::ceil_div(numSegments, 32);
+        for(int batch32 = warpIdInGrid; batch32 < numBatches; batch32 += numWarpsInGrid){
+            const int workSegmentId = batch32 * 32 + warp.thread_rank();
+            int workSegmentLength = 0;
+            size_t workSegmentOffset = 0;
+            if(workSegmentId < numSegments){
+                workSegmentLength = d_lengths[workSegmentId];
+                workSegmentOffset = d_offsets[workSegmentId];
             }
-        }
-        BlockExchange(temp.temp_exchange).StripedToBlocked(myElements, myElements);
-        // __syncthreads();
-
-        // if(threadIdx.x == 0){
-        //     printf("elements\n");
-        //     #pragma unroll
-        //     for(int i = 0; i < items_per_thread; i++){
-        //         printf("%u ", myElements[i]);
-        //     }
-        //     printf("\n");
-        // }
-
-        // const int printindex = 134088448;
-
-        // #pragma unroll
-        // for(int i = 0; i < items_per_thread; i++){
-        //     if(chunkBegin + threadIdx.x * items_per_thread + i >= (printindex-5) && chunkBegin + threadIdx.x * items_per_thread + i <= (printindex+5)){
-        //         printf("chunkId %ld, element %ld, %u\n", chunkId, chunkBegin + threadIdx.x * items_per_thread + i, myElements[i]);
-        //     }
-        // }
-
-
-        int tailFlags[items_per_thread];
-        BlockDiscontinuity(temp.temp_discontinuity).FlagTails(tailFlags, myElements, cuda::std::not_equal_to{});
-        #pragma unroll
-        for(int i = 0; i < items_per_thread; i++){
-            if(chunkBegin + threadIdx.x * items_per_thread + i >= chunkEnd_excl){
-                tailFlags[i] = 0;
-            }
-        }
-
-        // if(threadIdx.x == 0){
-        //     printf("tailFlags\n");
-        //     #pragma unroll
-        //     for(int i = 0; i < items_per_thread; i++){
-        //         printf("%u ", tailFlags[i]);
-        //     }
-        //     printf("\n");
-        // }
-
-        // #pragma unroll
-        // for(int i = 0; i < items_per_thread; i++){
-        //     if(chunkBegin + threadIdx.x * items_per_thread + i >= (printindex-5) && chunkBegin + threadIdx.x * items_per_thread + i <= (printindex+5)){
-        //         printf("chunkId %ld, tailFlags %ld, %u\n", chunkId, chunkBegin + threadIdx.x * items_per_thread + i, tailFlags[i]);
-        //     }
-        // }
-
-        //exclusive sum to compute run ids marked by tail flags
-        int prefixsum[items_per_thread];
-        BlockScanInt(temp.temp_scanInt).ExclusiveSum(tailFlags, prefixsum);
-        // __syncthreads();
-
-        // if(threadIdx.x == 0){
-        //     printf("prefixsum\n");
-        //     #pragma unroll
-        //     for(int i = 0; i < items_per_thread; i++){
-        //         printf("%u ", prefixsum[i]);
-        //     }
-        //     printf("\n");
-        // }
-
-        // #pragma unroll
-        // for(int i = 0; i < items_per_thread; i++){
-        //     if(chunkBegin + threadIdx.x * items_per_thread + i >= (printindex-5) && chunkBegin + threadIdx.x * items_per_thread + i <= (printindex+5)){
-        //         printf("chunkId %ld, prefixsum %ld, %u\n", chunkId, chunkBegin + threadIdx.x * items_per_thread + i, prefixsum[i]);
-        //     }
-        // }
-
-
-
-        //inclusive scan to compute run lengths
-        RunIdCountPair zippedprefixsum[items_per_thread];
-        {
-            RunIdCountPair zipped[items_per_thread];
-            #pragma unroll
-            for(int i = 0; i < items_per_thread; i++){
-                zipped[i].count = 1;
-                zipped[i].runId = prefixsum[i];
-            }
-            RunIdCountPairScanOp pairScanOp{};
-            BlockScanPair(temp.temp_scanPair).InclusiveScan(zipped, zippedprefixsum, pairScanOp);
-            // __syncthreads();
-
-        }
-
-
-        #pragma unroll
-        for(int i = 0; i < items_per_thread; i++){
-            if(tailFlags[i] == 1){
-                smem_runLengths[prefixsum[i]] = zippedprefixsum[i].count;
-            }
-        }
-        __syncthreads();
-
-// if(warp.thread_rank() == 0) printf("E\n");
-        int myRunLengths[items_per_thread];
-        #pragma unroll
-        for(int i = 0; i < items_per_thread; i++){
-            myRunLengths[i] = smem_runLengths[zippedprefixsum[i].runId];
-        }
-
-        #pragma unroll
-        for(int i = 0; i < items_per_thread; i++){
-            if(chunkBegin + threadIdx.x * items_per_thread + i < chunkEnd_excl){
-                char letter = (myElements[i] >> 16);
-                if(myRunLengths[i] >= maskingThreshold){
-                    letter = maskingLetter;
-                }
-                smem_letters[threadIdx.x * items_per_thread + i] = letter;
-            }
-        }
-        __syncthreads();
-
-
-// if(warp.thread_rank() == 0) printf("F\n");
-
-        //write to output
-
-        const bool isFirstChunk = chunkBegin == 0;
-        const bool isLastChunk = chunkEnd_excl == totalInputElements;
-
-        #pragma unroll
-        for(int i = 0; i < items_per_thread; i++){
-            const int index = i * blockDim.x + threadIdx.x;
-            if(!isFirstChunk && !isLastChunk){
-                if(index >= (maskingThreshold - 1)){
-                    if(index < items_per_block - (maskingThreshold - 1) ){
-                        d_outputData[chunkBegin + index] = smem_letters[index];
-
-                        // if(chunkBegin + index == 2046){
-                        //     printf("AAA chunkId %ld, write %c to %d. index %d, \n", chunkId, smem_letters[index], 2046, index);
-                        // }
-                    }
-                }
-            }else if(!isFirstChunk && isLastChunk){
-                if(index >= (maskingThreshold - 1)){
-                    if(chunkBegin + index < chunkEnd_excl){
-                        d_outputData[chunkBegin + index] = smem_letters[index];
-
-                        // if(chunkBegin + index == 2046){
-                        //     printf("BBB chunkId %ld, write %c to %d. index %d, \n", chunkId, smem_letters[index], 2046, index);
-                        // }
-                    }
-                }
-            }else if(isFirstChunk && !isLastChunk){
-                if(index < items_per_block - (maskingThreshold - 1) ){
-                    d_outputData[chunkBegin + index] = smem_letters[index];
-
-                    // if(chunkBegin + index == 2046){
-                    //     printf("CCC chunkId %ld, write %c to %d. index %d, \n", chunkId, smem_letters[index], 2046, index);
-                    // }
-                }
-            }else{
-                //first and last
-                if(chunkBegin + index < chunkEnd_excl){
-                    d_outputData[chunkBegin + index] = smem_letters[index];
-
-                    // if(chunkBegin + index == 2046){
-                    //     printf("DDD chunkId %ld, write %c to %d. index %d, \n", chunkId, smem_letters[index], 2046, index);
-                    // }
-                }
-            }
-        }
-
-
-        // #pragma unroll
-        // for(int i = 0; i < items_per_thread; i++){
-        //     const int index = i * blockDim.x + threadIdx.x;
-        //     if(chunkBegin + index < chunkEnd_excl){
-        //         if(chunkId == numChunks-1){
-        //             if(chunkBegin + index == printindex){
-        //                 printf("AAA write %c to %d\n", smem_letters[index], printindex);
-        //                 }
-        //             d_outputData[chunkBegin + index] = smem_letters[index];
-        //         }else{
-        //             if(index < items_per_block - (maskingThreshold - 1)){
-        //                 if(chunkBegin + index == printindex){
-        //                     printf("BBB chunkId %ld, write %c to %d. index %d, \n", chunkId, smem_letters[index], printindex, index);
-        //                 }
-        //                 d_outputData[chunkBegin + index] = smem_letters[index];
-        //             }
-        //         }
-        //     }
-        // }
-
-        // #pragma unroll
-        // for(int i = 0; i < items_per_thread; i++){
-        //     const int index = i * blockDim.x + threadIdx.x;
-        //     if(chunkBegin + index < chunkEnd_excl){
-        //         if(chunkId == 0){
-        //             if(chunkBegin + index == printindex){
-        //                 printf("AAA write %c to %d\n", smem_letters[index], printindex);
-        //                 }
-        //             d_outputData[chunkBegin + index] = smem_letters[index];
-        //         }else{
-        //             //avoid overwriting results from previous overlapping chunk
-        //             if(index >= (maskingThreshold - 1)){
-        //                 if(chunkBegin + index == printindex){
-        //                     printf("BBB chunkId %ld, write %c to %d. index %d, \n", chunkId, smem_letters[index], printindex, index);
-        //                 }
-        //                 d_outputData[chunkBegin + index] = smem_letters[index];
-        //             }
-        //         }
-        //     }
-        // }
-
-// if(warp.thread_rank() == 0) printf("G\n");
-
-
-        __syncthreads();
-    }
-}
-
-
-
-
-template<class InputDataIterator, class InputOffsetIterator>
-void maskSequences_custom_kernel_impl3(
-    char* d_outputData,
-    InputDataIterator d_inputData, //returns the letter (char) to consider for masking. each letter must be in range [0, 127]
-    const int* d_inputLengths, //size numInputSequences
-    InputOffsetIterator d_inputOffsets, //size numInputSequences
-    size_t totalInputElements,
-    int numInputSequences,
-    int maskingThreshold, // replace letters in all repeats >= maskingThreshold by masking maskingLetter
-    char maskingLetter,
-    char paddingLetter,
-    cudaStream_t stream
-){
-
-
-    // auto d_segmentIds = thrust::make_transform_iterator(
-    //     thrust::make_counting_iterator<size_t>(0),
-    //     cuda::proclaim_return_type<int>([=] __device__ (size_t index){
-    //         auto upIter = thrust::upper_bound(thrust::seq, d_inputOffsets, d_inputOffsets + numInputSequences, index);
-    //         int segmentId = numInputSequences-1;
-    //         if(upIter != d_inputOffsets + numInputSequences){
-    //             segmentId = cuda::std::distance(d_inputOffsets, upIter) - 1;
-    //         }
-    //         return segmentId;
-    //     })
-    // );
-
-    //we only need to distinguish segments in each subchunk in the kernel, ushort is sufficient and provides safe wrap-around for the scan.
-
-    uint16_t* d_segmentIds; 
-    CUDACHECK(cudaMallocAsync(&d_segmentIds, sizeof(uint16_t) * totalInputElements, stream));
-    CUDACHECK(cudaMemsetAsync(d_segmentIds, 0, sizeof(uint16_t) * totalInputElements, stream));
-    thrust::scatter(
-        thrust::cuda::par_nosync.on(stream),
-        thrust::make_constant_iterator<uint16_t>(1),
-        thrust::make_constant_iterator<uint16_t>(1) + numInputSequences,
-        d_inputOffsets,
-        d_segmentIds
-    );
-    thrust::inclusive_scan(
-        thrust::cuda::par_nosync(thrust_async_allocator<char>(stream)).on(stream),
-        d_segmentIds,
-        d_segmentIds + totalInputElements,
-        d_segmentIds
-    );
-
-    int deviceId;
-    int numSMs;
-    int maxBlocksPerSM = 0;
-    constexpr int blocksize = 128;
-    auto kernel = maskingKernel3<blocksize, InputDataIterator, decltype(d_segmentIds)>;
-
-    CUDACHECK(cudaGetDevice(&deviceId));
-    CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
-    CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-        &maxBlocksPerSM,
-        kernel,
-        blocksize, 
-        0
-    ));
-
-    kernel<<<numSMs*maxBlocksPerSM, blocksize, 0, stream>>>(
-        d_outputData,
-        d_inputData,
-        d_segmentIds,
-        totalInputElements,
-        maskingThreshold,
-        maskingLetter
-    );
-    CUDACHECKASYNC;
-
-    setPaddingBytesKernel<128><<<cuda::ceil_div(numInputSequences, 128 / 4), 128, 0, stream>>>(
-        d_outputData,
-        d_inputLengths,
-        d_inputOffsets,
-        numInputSequences,
-        paddingLetter
-    );
-    CUDACHECKASYNC;
-
-    CUDACHECK(cudaFreeAsync(d_segmentIds, stream));
-
-}
-
-
-
-
-template<int blocksize, int items_per_thread, class InputDataIterator, class InputOffsetIterator>
-__global__
-void maskingKernel4_smem_rle_rld_1warpPerSegment(
-    char* d_outputData,
-    InputDataIterator d_inputData,
-    const int* d_lengths,
-    InputOffsetIterator d_offsets,
-    int64_t totalInputElements,
-    int numSegments,
-    int maskingThreshold,
-    char maskingLetter,
-    char paddingLetter
-){
-
-    constexpr int items_per_warp = items_per_thread * 32;
-
-    auto warp = cooperative_groups::tiled_partition<32>(cooperative_groups::this_thread_block());
-    constexpr int numWarpsInBlock = blocksize / 32;
-    const int numWarpsInGrid = numWarpsInBlock * gridDim.x;
-    const int warpIdInBlock = warp.meta_group_rank();
-    const int warpIdInGrid = (threadIdx.x + blockIdx.x * blockDim.x) / 32;
-
-    constexpr char oob_element = cuda::std::numeric_limits<char>::max();
-
-    struct RunIdCountPair{
-        int runId;
-        int count;
-    };
-    struct RunIdCountPairScanOp{
-        __device__
-        RunIdCountPair operator()(const RunIdCountPair& left, const RunIdCountPair& right) const{
-            RunIdCountPair result;
-            result.runId = right.runId;
-            if(left.runId == right.runId){
-                result.count = right.count + left.count;
-            }else{
-                result.count = right.count;                
-            }
-            return result;
-        }
-    };
-
-    using WarpLoadChar = cub::WarpLoad<char, items_per_thread, cub::WARP_LOAD_TRANSPOSE>;
-    using WarpLoadChar4 = cub::WarpLoad<char4, items_per_thread / 4, cub::WARP_LOAD_TRANSPOSE>;
-    using WarpScanInt = cub::WarpScan<int>;
-    using WarpScanPair = cub::WarpScan<RunIdCountPair>;
-
-    __shared__ struct Temp{
-        struct U{
-            typename WarpLoadChar::TempStorage temp_warploadChar[numWarpsInBlock];
-            //typename WarpLoadChar4::TempStorage temp_warploadChar4[numWarpsInBlock];
-            // char4 loaded_letters4[numWarpsInBlock][items_per_warp/4];
-            char masked_letters[numWarpsInBlock][items_per_warp];
-        } u;
-        typename WarpScanInt::TempStorage temp_warpScanInt[numWarpsInBlock];
-        typename WarpScanPair::TempStorage temp_warpScanPair[numWarpsInBlock];
-        int runOffsets[numWarpsInBlock][items_per_warp];
-        char runValues[numWarpsInBlock][items_per_warp];
-    } temp;
-
-
-
-    for(int segmentId = warpIdInGrid; segmentId < numSegments; segmentId += numWarpsInGrid){
-        const size_t segmentOffset = d_offsets[segmentId];
-        const int segmentSize = d_lengths[segmentId];
-        const auto segmentInputData = d_inputData + segmentOffset;
-        char* const segmentOutputData = d_outputData + segmentOffset;
-
-        const int numChunks = cuda::ceil_div(segmentSize, items_per_warp);
-
-        char lastElementOfPreviousChunk = oob_element;
-        int lastCountOfPreviousChunk = 0;
-        int writtenOutputElements = 0;
-
-        for(int chunkId = 0; chunkId < numChunks; chunkId++){
-            const int chunkBegin = chunkId * items_per_warp;
-            const int chunkEnd_excl = cuda::std::min(segmentSize, chunkBegin + items_per_warp);
-            const int numInChunk = chunkEnd_excl - chunkBegin;
-
-            // if(warpIdInBlock == 0 && warp.thread_rank() == 3){
-            //     printf("segmentOffset %lu, chunkBegin %d, chunkEnd_excl %d, numInChunk %d\n", segmentOffset, chunkBegin, chunkEnd_excl, numInChunk);
+            const int workSegmentUints = cuda::ceil_div(workSegmentLength, 4);
+            
+            smem.segmentLengths[warpIdInBlock][warp.thread_rank()] = workSegmentLength;
+            smem.segmentOffsets[warpIdInBlock][warp.thread_rank()] = workSegmentOffset;
+            // if(batch32 == 0){
+            //     printf("workSegmentId %d, workSegmentLength %d, workSegmentOffset %lu\n", 
+            //         workSegmentId, workSegmentLength, workSegmentOffset);
             // }
-
-            alignas(4) char items[items_per_thread];
-
-            WarpLoadChar(temp.u.temp_warploadChar[warpIdInBlock]).Load(segmentInputData + chunkBegin, items, numInChunk, oob_element);
-
-            // {
-            //     for(int i = warp.thread_rank(); i < cuda::ceil_div(numInChunk,4); i += warp.size()){
-            //         temp.u.loaded_letters4[warpIdInBlock][i] = ((const char4*)(segmentInputData + chunkBegin))[i];
-            //     }
-            //     warp.sync();
-            //     #pragma unroll
-            //     for(int i = 0; i < items_per_thread / 4; i++){
-            //         if(warp.thread_rank() * (items_per_thread/4) + i < cuda::ceil_div(numInChunk,4)){
-            //             char4 tmp = temp.u.loaded_letters4[warpIdInBlock][warp.thread_rank() * (items_per_thread/4)  + i];
-            //             memcpy(&items[4*i], &tmp, 4);
-            //         }else{
-            //             unsigned int tmp = 0x7F7F7F7F;
-            //             memcpy(&items[4*i], &tmp, 4);
-            //         }
-            //     }
-            //     #pragma unroll
-            //     for(int i = 0; i < items_per_thread; i++){
-            //         if(warp.thread_rank() * (items_per_thread) + i >= numInChunk){
-            //             items[i] = oob_element;
-            //         }
-            //     }
-            // }
-
-            // char4 items4[items_per_thread / 4];
-            // WarpLoadChar4(temp.u.temp_warploadChar4[warpIdInBlock]).Load((const char4*)(segmentInputData + chunkBegin), items4, cuda::ceil_div(numInChunk,4), char4{127,127,127,127});
-            // memcpy(&items[0], &items4[0], sizeof(char) * items_per_thread);
-
-            warp.sync(); //sync to ensure smem union u can be reused
-
-            // if(warpIdInBlock == 0 && warp.thread_rank() == 3){
-            //     printf("items\n");
-            //     #pragma unroll
-            //     for(int i = 0; i < items_per_thread; i++){
-            //         printf("%d ", int(items[i]));
-            //     }
-            //     printf("\n");
-            // }
-
-            int tailFlags[items_per_thread];
+            warp.sync();
+    
+                    
             {
-                auto successoritem = warp.shfl_down(items[0], 1);
-                if(warp.thread_rank() == warp.size()-1){
-                    if(chunkEnd_excl < segmentSize){
-                        successoritem = segmentInputData[chunkEnd_excl];
+               
+    
+                if constexpr(!is_power_of_two(maxUintsPerThread)){
+                    uint32_t temploaded[32];
+
+                    if(batch32 != numBatches-1){
+                        for(int loadLane = warp.thread_rank(); loadLane < maxUintsPerThread; loadLane += warp.num_threads()){
+                            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                                const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                                const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                                const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                                if(loadLane < segmentUints){
+                                    temploaded[localLoadSegmentId] = segmentPtr[loadLane];
+                                }
+                            }
+                            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                smem.elements[warpIdInBlock][loadLane][localLoadSegmentId] 
+                                    = applyInputTransform(temploaded[localLoadSegmentId]);
+                            }
+                        }
                     }else{
-                        successoritem = oob_element;
-                    }
-                }
-                #pragma unroll
-                for(int i = 0; i < items_per_thread-1; i++){
-                    tailFlags[i] = items[i] != items[i+1];
-                }
-                tailFlags[items_per_thread-1] = items[items_per_thread-1] != successoritem;
-            }
-
-            // if(warpIdInBlock == 0 && warp.thread_rank() == 10){
-            //     printf("tailFlags\n");
-            //     #pragma unroll
-            //     for(int i = 0; i < items_per_thread; i++){
-            //         printf("%d ", tailFlags[i]);
-            //     }
-            //     printf("\n");
-            // }
-
-            //exclusive scan of tail flags to compute num runs
-            int prefixsum[items_per_thread];
-            int warpNumRuns = 0;
-            {
-                prefixsum[0] = 0;
-                #pragma unroll
-                for(int i = 1; i < items_per_thread; i++){
-                    prefixsum[i] = prefixsum[i-1] + tailFlags[i-1];
-                }
-                int inclTotal = prefixsum[items_per_thread-1] + tailFlags[items_per_thread-1];
-                int predTotal = 0;
-                WarpScanInt(temp.temp_warpScanInt[warpIdInBlock]).ExclusiveSum(inclTotal, predTotal, warpNumRuns);
-                for(int i = 0; i < items_per_thread; i++){
-                    prefixsum[i] += predTotal;
-                }
-            }
-
-            // if(warpIdInBlock == 0 && warp.thread_rank() == 3){
-            //     printf("warpNumRuns %d\n", warpNumRuns);
-            // }
-
-            // if(warpIdInBlock == 0 && warp.thread_rank() == 3){
-            //     printf("tailFlags PS\n");
-            //     #pragma unroll
-            //     for(int i = 0; i < items_per_thread; i++){
-            //         printf("%d ", prefixsum[i]);
-            //     }
-            //     printf("\n");
-            // }
-
-            //inclusive scan to compute run lengths
-            int run_lengths[items_per_thread];
-            {
-                RunIdCountPair zippedprefixsum[items_per_thread];
-                RunIdCountPair zipped[items_per_thread];
-                #pragma unroll
-                for(int i = 0; i < items_per_thread; i++){
-                    zipped[i].count = 1;
-                    zipped[i].runId = prefixsum[i];
-                }
-                if(chunkId > 0 && warp.thread_rank() == 0){
-                    if(lastElementOfPreviousChunk == items[0]){
-                        zipped[0].count = 1 + lastCountOfPreviousChunk;
-                    }
-                }
-                RunIdCountPairScanOp pairScanOp{};
-
-                //inclusive scan
-                zippedprefixsum[0] = zipped[0];
-                #pragma unroll
-                for(int i = 1; i < items_per_thread; i++){
-                    zippedprefixsum[i] = pairScanOp(zippedprefixsum[i-1], zipped[i]);
-                }
-                RunIdCountPair inclTotal = zippedprefixsum[items_per_thread-1];
-                RunIdCountPair predTotal;
-                WarpScanPair(temp.temp_warpScanPair[warpIdInBlock]).ExclusiveScan(inclTotal, predTotal, RunIdCountPair{0, 0}, pairScanOp);
-                for(int i = 0; i < items_per_thread; i++){
-                    zippedprefixsum[i] = pairScanOp(predTotal, zippedprefixsum[i]);
-                }
-
-                // if(warpIdInBlock == 0 && warp.thread_rank() == 3){
-                //     printf("zippedprefixsum count\n");
-                //     #pragma unroll
-                //     for(int i = 0; i < items_per_thread; i++){
-                //         printf("%d ", zippedprefixsum[i].count);
-                //     }
-                //     printf("\n");
-                // }
-                // if(warpIdInBlock == 0 && warp.thread_rank() == 3){
-                //     printf("zippedprefixsum runId\n");
-                //     #pragma unroll
-                //     for(int i = 0; i < items_per_thread; i++){
-                //         printf("%d ", zippedprefixsum[i].runId);
-                //     }
-                //     printf("\n");
-                // }
-
-                lastElementOfPreviousChunk = warp.shfl(items[items_per_thread-1], warp.size() - 1);
-                lastCountOfPreviousChunk = warp.shfl(zippedprefixsum[items_per_thread-1].count, warp.size() - 1);
-
-                #pragma unroll
-                for(int i = 0; i < items_per_thread; i++){
-                    run_lengths[i] = tailFlags[i] == 1 ? zippedprefixsum[i].count : 0;
-                }
-            }
-
-            // if(warpIdInBlock == 0 && warp.thread_rank() == 3){
-            //     printf("run_lengths\n");
-            //     #pragma unroll
-            //     for(int i = 0; i < items_per_thread; i++){
-            //         printf("%d ", run_lengths[i]);
-            //     }
-            //     printf("\n");
-            // }
-
-
-            //exclusive scan of run lengths
-            int run_lengths_ps[items_per_thread];
-            int warpNumDecodedElements = 0;            
-            {
-                run_lengths_ps[0] = 0;
-                #pragma unroll
-                for(int i = 1; i < items_per_thread; i++){
-                    run_lengths_ps[i] = run_lengths_ps[i-1] + run_lengths[i-1];
-                }
-                int inclTotal = run_lengths_ps[items_per_thread-1] + run_lengths[items_per_thread-1];
-                int predTotal = 0;
-                WarpScanInt(temp.temp_warpScanInt[warpIdInBlock]).ExclusiveSum(inclTotal, predTotal, warpNumDecodedElements);
-                for(int i = 0; i < items_per_thread; i++){
-                    run_lengths_ps[i] += predTotal;
-                }
-            }
-
-            // if(warpIdInBlock == 0 && warp.thread_rank() == 3){
-            //     printf("run_lengths excl PS\n");
-            //     #pragma unroll
-            //     for(int i = 0; i < items_per_thread; i++){
-            //         printf("%d ", run_lengths_ps[i]);
-            //     }
-            //     printf("\n");
-            // }
-
-
-            // if(warpIdInBlock == 0 && warp.thread_rank() == 3){
-            //     printf("warpNumDecodedElements %d\n", warpNumDecodedElements);
-            // }
-
-            // if(warpIdInBlock == 0){
-            //     if(segmentId == 0){
-
-            //         warp.sync();
-            //         if(warp.thread_rank() == 0){
-            //             printf("warpNumDecodedElements %d\n", warpNumDecodedElements);
-            //         }
-            //         warp.sync();
-            //         for(int t = 0; t < warp.size(); t++){
-            //             if(t == warp.thread_rank()){
-            //                 for(int i = 0; i < items_per_thread; i++){
-            //                     printf("thread %d, letter,tailFlag,prefixsum,run_lengths %d, %d, %d, %d, %d\n", 
-            //                         warp.thread_rank(), int(items[i]), tailFlags[i], prefixsum[i], run_lengths[i], run_lengths_ps[i]);
-            //                 }
-            //             }
-            //         }
-            //         warp.sync();
-            //     }
-            // }
-
-
-            //write masked RLE result to smem
-            for(int i = 0; i < items_per_thread; i++){ 
-                if(tailFlags[i] == 1){
-                    char letter = items[i];
-                    const int count = run_lengths[i];
-                    if(count >= maskingThreshold){
-                        letter = maskingLetter;
-                    }
-                    const int smemOutputOffset = prefixsum[i];
-                    const int runOffset = run_lengths_ps[i];
-
-                    temp.runOffsets[warpIdInBlock][smemOutputOffset] = runOffset; 
-                    temp.runValues[warpIdInBlock][smemOutputOffset] = letter;
-                    // printf("thread %d, write (%c %d) to smem.\n", warp.thread_rank(), letter, runOffset);
-                }
-            }
-            warp.sync(); //wait for RLE results
-
-            // if(warpIdInBlock == 0 && warp.thread_rank() == 0){
-            //     if(segmentId == 0){
-            //         printf("runs %d. warpNumDecodedElements %d. (value, offset)\n", warpNumRuns, warpNumDecodedElements);
-            //         for(int i = 0; i < warpNumRuns; i++){
-            //             printf("(%d %d), ", int(temp.runValues[warpIdInBlock][i]), temp.runOffsets[warpIdInBlock][i]);
-            //         }
-            //         printf("\n");
-            //     }
-            // }
-            
-
-            //decode RLE results into smem and write back to global output
-            {
-                const int* const smemOffsetsBegin = &temp.runOffsets[warpIdInBlock][0];
-                const int* const smemOffsetsEnd = smemOffsetsBegin + warpNumRuns;
-                const int iterations = cuda::ceil_div(warpNumDecodedElements, items_per_warp);
-                for(int iteration = 0; iteration < iterations; iteration++){
-                    const int iterationBeginIndex = iteration * items_per_warp;
-                    const int numInIteration = cuda::std::min(warpNumDecodedElements - iterationBeginIndex, items_per_warp);
-
-                    for(int i = warp.thread_rank(); i < numInIteration; i += warp.size()){ 
-                        const int outputIndex = iterationBeginIndex + i;
-                        if(outputIndex < warpNumDecodedElements){
-                            auto it = thrust::lower_bound(thrust::seq, smemOffsetsBegin, smemOffsetsEnd, outputIndex+1);
-                            const int runId = cuda::std::distance(smemOffsetsBegin, it) - 1;
-                            // if(segmentId == 42 && iteration > 0){
-                            //     printf("outputIndex %d, runId %d, iterationBeginIndex %d\n", outputIndex, runId, iterationBeginIndex);
-                            // }
-                            temp.u.masked_letters[warpIdInBlock][i] = temp.runValues[warpIdInBlock][runId];
+                        const int numSegmentsInBatch = cuda::std::min(32, numSegments - batch32 * 32);
+                        for(int loadLane = warp.thread_rank(); loadLane < maxUintsPerThread; loadLane += warp.num_threads()){
+                            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                if(localLoadSegmentId < numSegmentsInBatch){
+                                    const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                                    const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                                    const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                                    if(loadLane < segmentUints){
+                                        temploaded[localLoadSegmentId] = segmentPtr[loadLane];
+                                    }
+                                }
+                            }
+                            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                smem.elements[warpIdInBlock][loadLane][localLoadSegmentId] 
+                                    = applyInputTransform(temploaded[localLoadSegmentId]);
+                            }
                         }
                     }
-                    warp.sync();
-
-                    // if(segmentId == 0){
-                    //     if(warp.thread_rank() == 0){
-                    //         printf("smem masked letters. numInIteration %d.\n", numInIteration);
-                    //         for(int i = 0; i < numInIteration; i++){
-                    //             printf("%d ", int(temp.u.masked_letters[warpIdInBlock][i]));
-                    //         }
-                    //         printf("\n");
-                    //     }
-                    // }
-
-                    // write smem segment to global output;
-                    for(int i = warp.thread_rank(); i < numInIteration; i += warp.size()){
-                        segmentOutputData[writtenOutputElements + i] = temp.u.masked_letters[warpIdInBlock][i];
+                }else{
+                    uint32_t temploaded[maxUintsPerThread];
+                    // #pragma unroll 32
+                    for(int ui = 0; ui < maxUintsPerThread; ui++){
+                        const int k = ui * warp.num_threads() + warp.thread_rank();
+                        const int localLoadSegmentId = k / maxUintsPerThread;
+                        const int loadLane = k % maxUintsPerThread;
+        
+                        // if(localLoadSegmentId < 32){
+                            const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                            const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                            const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                            const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                            if(loadLane < segmentUints){
+                                temploaded[ui] = segmentPtr[loadLane];
+                            }
+                        // }
                     }
-                    warp.sync();
-                    writtenOutputElements += numInIteration;
+                    // #pragma unroll 32
+                    for(int ui = 0; ui < maxUintsPerThread; ui++){
+                        const int k = ui * warp.num_threads() + warp.thread_rank();
+                        const int localLoadSegmentId = k / maxUintsPerThread;
+                        const int loadLane = k % maxUintsPerThread;
+        
+                        // if(localLoadSegmentId < 32){
+                            smem.elements[warpIdInBlock][loadLane][localLoadSegmentId] 
+                                = applyInputTransform(temploaded[ui]);
+                        // }
+                    }
+                }
+            }
+    
+            warp.sync();
+    
+    
+            #if 1
+            if(workSegmentId < numSegments){
+                
+                alignas(4) char flags[(maxUintsPerThread+maxMaskingHaloUints) * 4];
+                alignas(4) char charElements[maxUintsPerThread * 4];
+
+                //load elements
+                #pragma unroll
+                for(int i = 0; i < maxUintsPerThread; i++){
+                    if(i < workSegmentUints){
+                        uint32_t tmp = smem.elements[warpIdInBlock][i][warp.thread_rank()];
+                        memcpy(&charElements[4*i], &tmp, 4);
+                    }
+                }
+
+                //compute flags
+                {
+                    #pragma unroll
+                    for(int i = 0; i < (maxUintsPerThread+maxMaskingHaloUints)*4; i++){
+                        if(i == 0){
+                            flags[i] = 1;
+                        }else{
+                            if(i < workSegmentLength){
+                                flags[i] = charElements[i-1] != charElements[i];
+                            }else{
+                                flags[i] = 1;
+                            }
+                        }
+                    }
+                }
+
+                //counting
+                int count = 0;
+                int prevcount = 0;
+                #pragma unroll
+                for(int i = 0; i < maxUintsPerThread*4; i++){
+                    if(flags[i] == 0){
+                        count = prevcount;
+                    }else{
+                        //new segment begins at i, count to the right
+                        count = 1;
+                        #pragma unroll
+                        for(int k = 0; k < maxMaskingThreshold-1; k++){
+                            if(flags[i+1+k] == 1){
+                                break;
+                            }
+                            count++;
+                        }
+                    }
+                    if(count >= maskingThreshold){
+                        charElements[i] = maskingLetter;
+                    }
+                    prevcount = count;
+                }
+
+                if(applyExtraPaddingLetter){
+                    #pragma unroll
+                    for(int i = 0; i < maxUintsPerThread; i++){
+                        if(i >= workSegmentLength){
+                            charElements[i] = paddingLetter;
+                        }
+                    }
+                }
+
+                //store updated elements to smem
+                #pragma unroll
+                for(int i = 0; i < maxUintsPerThread; i++){
+                    if(i < workSegmentUints){
+                        uint32_t tmp;
+                        memcpy(&tmp, &charElements[4*i], 4);
+                        smem.elements[warpIdInBlock][i][warp.thread_rank()] = tmp;
+                    }
                 }
             }
 
-        }
+            #endif
+    
+            //wait until masking is done in smem
+            warp.sync();
+    
+            //write smem back to gmem (inverse operation of loading )
 
-        // if(warpIdInBlock == 0 && warp.thread_rank() == 3){
-        //     printf("segmentSize %d, writtenOutputElements %d\n", segmentSize, writtenOutputElements);
-        // }
-        // if(segmentSize != writtenOutputElements && segmentId == 13322){
-        //     if(warp.thread_rank() == 0){
-        //         printf("segmentId %d, segmentSize %d, writtenOutputElements %d\n", segmentId, segmentSize, writtenOutputElements);
-        //         for(int i = 0; i < segmentSize; i++){
-        //             printf("%d ", segmentInputData[i]);
-        //         }
-        //         printf("\n");
-        //     }
-        // }
-        assert(segmentSize == writtenOutputElements);
+            #if 1
+            for(int ui = 0; ui < maxUintsPerThread; ui++){
+                const int k = ui * warp.num_threads() + warp.thread_rank();
+                const int localLoadSegmentId = k / maxUintsPerThread;
+                const int loadLane = k % maxUintsPerThread;
+    
+                // if(localLoadSegmentId < 32){
+                    const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                    const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                    uint32_t* const segmentPtr = (uint32_t*)(d_outputData + segmentOffset);
+                    if(loadLane < segmentUints){
+                        segmentPtr[loadLane] = smem.elements[warpIdInBlock][loadLane][localLoadSegmentId];
+                    }
+                // }
+            }
+            #else
 
-        //apply 4-byte padding
-        const int paddedLength = cuda::ceil_div(segmentSize, 4) * 4;
-        if(segmentSize + warp.thread_rank() < paddedLength){
-            segmentOutputData[segmentSize + warp.thread_rank()] = paddingLetter;
+            const int numSegmentsInBatch = cuda::std::min(32, numSegments - batch32 * 32);
+            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                // if(localLoadSegmentId < numSegmentsInBatch){
+                    const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                    const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                    uint32_t* const segmentPtr = (uint32_t*)(d_outputData + segmentOffset);
+
+                    for(int loadLane = warp.thread_rank(); loadLane < segmentUints; loadLane += warp.num_threads()){
+                        segmentPtr[loadLane] = smem.elements[warpIdInBlock][loadLane][localLoadSegmentId];
+                    }
+                // }
+            }
+
+            #endif
+    
+            //wait until smem can be re-used
+            warp.sync();
+    
         }
     }
-   
-}
+    
+    
+    template<int blocksize, int maxMaskingThreshold, int maxSegmentLength, class InputOffsetIterator, class InputTransformOp>
+    void callSingleTileWithPlainFlagsKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp,
+        cudaStream_t stream
+    ){
+        if(maskingThreshold > maxMaskingThreshold){
+            throw std::runtime_error("maskingThreshold > maxMaskingThreshold");
+        }
+        int deviceId;
+        int numSMs;
+        CUDACHECK(cudaGetDevice(&deviceId));
+        CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
 
-/*
-    Requirements:
-
-*/
-template<class InputDataIterator, class InputOffsetIterator>
-void maskSequences_custom_kernel_impl4(
-    char* d_outputData,
-    InputDataIterator d_inputData, //returns the letter (char) to consider for masking. each letter must be in range [0, 127]
-    const int* d_inputLengths, //size numInputSequences
-    InputOffsetIterator d_inputOffsets, //size numInputSequences
-    size_t totalInputElements,
-    int numInputSequences,
-    int maskingThreshold, // replace letters in all repeats >= maskingThreshold by masking maskingLetter
-    char maskingLetter,
-    char paddingLetter, //to pad sequences to multiple of 4 bytes
-    cudaStream_t stream
-){
-
-
-    int deviceId;
-    int numSMs;
-    int maxBlocksPerSM = 0;
-    constexpr int blocksize = 256;
-    constexpr int items_per_thread = 4;
-    auto kernel = maskingKernel4_smem_rle_rld_1warpPerSegment<blocksize, items_per_thread, InputDataIterator, InputOffsetIterator>;
-
-    CUDACHECK(cudaGetDevice(&deviceId));
-    CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
-    CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-        &maxBlocksPerSM,
-        kernel,
-        blocksize, 
-        0
-    ));
-
-    const int requiredNumBlocks = cuda::ceil_div(numInputSequences, blocksize / 32);
-    const int numBlocks = std::min(requiredNumBlocks, numSMs*maxBlocksPerSM);
-
-    // std::cout << "numBlocks " << numBlocks << "\n";
-
-    kernel<<<numBlocks, blocksize, 0, stream>>>(
-        d_outputData,
-        d_inputData,
-        d_inputLengths,
-        d_inputOffsets,
-        totalInputElements,
-        numInputSequences,
-        maskingThreshold,
-        maskingLetter,
-        paddingLetter
-    );
-    CUDACHECKASYNC;
-}
-
-
-
-
-
-
-template<int blocksize, int maximumChunkSize, class InputTransformOp, class InputDataIterator, class InputOffsetIterator, class OutputOffsetIterator>
-__global__
-void maskingKernel5_smem_leftright_1warpPerSegment(
-    char* d_outputData,
-    OutputOffsetIterator d_outputOffsets,
-    InputDataIterator d_inputData,
-    const int* d_lengths,
-    InputOffsetIterator d_offsets,
-    int64_t totalInputElements,
-    int numSegments,
-    int maskingThreshold,
-    char maskingLetter,
-    char paddingLetter,
-    InputTransformOp inputTransformOp
-){
-    __builtin_assume(blocksize == blockDim.x);
-
-    constexpr int smemElements = maximumChunkSize;
-    static_assert(smemElements % 4 == 0);
-    static_assert(smemElements % 16 == 0);
-
-    auto warp = cooperative_groups::tiled_partition<32>(cooperative_groups::this_thread_block());
-    constexpr int numWarpsInBlock = blocksize / 32;
-    const int numWarpsInGrid = numWarpsInBlock * gridDim.x;
-    const int warpIdInBlock = warp.meta_group_rank();
-    const int warpIdInGrid = (threadIdx.x + blockIdx.x * blockDim.x) / 32;
-
-    constexpr bool isIdentityTransform = cuda::std::is_same_v<InputTransformOp, cuda::std::identity>;
-
-
-    __shared__ alignas(4) struct Smem{
-        char chunkElements[numWarpsInBlock][smemElements];
-    } smem;
-
-
-    for(int segmentId = warpIdInGrid; segmentId < numSegments; segmentId += numWarpsInGrid){
-        const size_t segmentOffset = d_offsets[segmentId];
-        const int segmentSize = d_lengths[segmentId];
-        const auto segmentInputData = d_inputData + segmentOffset;
-        char* const segmentOutputData = d_outputData + segmentOffset;
+        int maxBlocksPerSM = 0;
+    
+        constexpr int maxUintsPerThread = maxSegmentLength / 4;
+        constexpr int numWarpsInBlock = blocksize / 32;
+        auto kernel = singleTileWithPlainFlagsKernel<blocksize, maxMaskingThreshold, maxSegmentLength, InputOffsetIterator, InputTransformOp>;
+        using SmemType = SingleTileWithPlainFlagsKernel1Smem<numWarpsInBlock, maxUintsPerThread>;
+    
+        int smembytes = sizeof(SmemType);
+    
+        if(smembytes > 48*1024){
+            cudaError_t status = cudaFuncSetAttribute(reinterpret_cast<const void*>(kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, smembytes);
+            if(status != cudaSuccess){
+                cudaGetLastError();
+                throw std::runtime_error("Unable to set cudaFuncAttributeMaxDynamicSharedMemorySize to " + std::to_string(smembytes));
+            }
+        }
+    
+        CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &maxBlocksPerSM,
+            kernel,
+            blocksize, 
+            smembytes
+        ));
         
+        const int numBlocks = numSMs * maxBlocksPerSM;
+        
+        // std::cout << "numSegments "  << numSegments << ", num blocks " << numBlocks << "\n";
+    
+        #ifdef WITH_TIMING
+        helpers::GpuTimer timer1("maskingsinglethread::singleTileWithPlainFlagsKernel<" + std::to_string(blocksize) + "," + std::to_string(maxSegmentLength) + ">");
+        #endif
+        kernel<<<numBlocks, blocksize, smembytes, stream>>>(
+            d_outputData,
+            d_lengths,
+            d_offsets,
+            d_inputData,
+            numSegments,
+            maskingThreshold,
+            maskingLetter,
+            applyExtraPaddingLetter,
+            paddingLetter,
+            inputTransformOp
+        );
+        #ifdef WITH_TIMING
+        timer1.print();
+        #endif
+    }
 
-        //chunks are overlapping by maskingThreshold-1 positions
-        // const int numChunks = cuda::ceil_div(segmentSize, (smemElements - maskingThreshold - 1));
+#if defined(__CUDACC__)
+    template<int blocksize, int maxSegmentLength, class InputOffsetIterator, class InputTransformOp>
+    __global__
+    void singleTileAsyncLoadKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp
+    ){
+        __builtin_assume(blockDim.x == blocksize);
+        __builtin_assume(blockDim.y == 1);
+        __builtin_assume(blockDim.z == 1);
 
-        // for(int chunkId = 0; chunkId < numChunks; chunkId++){
-        //     const int chunkBegin = chunkId * (smemElements - maskingThreshold - 1);
-        //     const int chunkEnd_excl = cuda::std::min(segmentSize, chunkBegin + smemElements);
-        //     const int numInChunk = chunkEnd_excl - chunkBegin;
+        static_assert(maxSegmentLength % 4 == 0);
+        
+        auto block = cooperative_groups::this_thread_block();
+        auto warp = cooperative_groups::tiled_partition<32>(block);
+        
+        constexpr int numWarpsInBlock = blocksize / 32;
+        const int numWarpsInGrid = numWarpsInBlock * gridDim.x;
+        const int warpIdInBlock = warp.meta_group_rank();
+        const int warpIdInGrid = (threadIdx.x + blockIdx.x * blockDim.x) / 32;
+        
+        constexpr int maxUintsPerThread = maxSegmentLength / 4;
 
-        for(int chunkBegin = 0; chunkBegin < segmentSize; chunkBegin += smemElements - 2*(maskingThreshold - 1)){
-            const int chunkEnd_excl = cuda::std::min(segmentSize, chunkBegin + smemElements);
-            const int numInChunk = chunkEnd_excl - chunkBegin;
+        #pragma nv_diag_suppress static_var_with_dynamic_init
+        __shared__ cuda::barrier<cuda::thread_scope_block> barriers[numWarpsInBlock];
+        auto& warpBarrier = barriers[warp.meta_group_rank()];
+        if(warp.thread_rank() == 0){
+            init(&warpBarrier, warp.num_threads());
+        }
+        warp.sync();
 
-            //load chunk to shared memory
-            warp.sync(); //wait before re-using smem
-            if (isIdentityTransform && cuda::std::is_pointer_v<InputDataIterator> && chunkBegin % 4 == 0){
-                assert(uintptr_t(segmentInputData) % 4 == 0);
-                cooperative_groups::memcpy_async(
-                    warp, 
-                    &smem.chunkElements[warpIdInBlock][0], 
-                    cuda::aligned_size_t<4>(smemElements), 
-                    segmentInputData + chunkBegin, 
-                    cuda::aligned_size_t<4>(cuda::ceil_div(numInChunk,4)*4) //segments are padded to 4 bytes so reading more is safe
-                );
-                cooperative_groups::wait(warp);
-            }else{
-                for(int i = chunkBegin + warp.thread_rank(); i < chunkEnd_excl; i += warp.size()){
-                    smem.chunkElements[warpIdInBlock][i - chunkBegin] = inputTransformOp(segmentInputData[i]);
+        using Smem = SingleTileKernel1Smem<numWarpsInBlock, maxUintsPerThread>;
+        extern __shared__ char externsmem[];
+        Smem& smem = *((Smem*)externsmem);
+
+
+        auto applyInputTransform = [&](uint32_t data){
+            alignas(4) char elements[4];
+            memcpy(&elements[0], &data, 4);
+            for(int i = 0; i < 4; i++){
+                elements[i] = inputTransformOp(elements[i]);
+            }
+            memcpy(&data, &elements[0], 4);
+            return data;
+        };
+    
+
+    
+        // if(threadIdx.x + blockIdx.x == 0){
+        //     printf("numSegments %d\n", numSegments);
+        // }
+    
+        //each warp processes 32 sequences
+        const int numBatches = cuda::ceil_div(numSegments, 32);
+        for(int batch32 = warpIdInGrid; batch32 < numBatches; batch32 += numWarpsInGrid){
+            const int workSegmentId = batch32 * 32 + warp.thread_rank();
+            int workSegmentLength = 0;
+            size_t workSegmentOffset = 0;
+            if(workSegmentId < numSegments){
+                workSegmentLength = d_lengths[workSegmentId];
+                workSegmentOffset = d_offsets[workSegmentId];
+            }
+            const int workSegmentUints = cuda::ceil_div(workSegmentLength, 4);
+            
+            smem.segmentLengths[warpIdInBlock][warp.thread_rank()] = workSegmentLength;
+            smem.segmentOffsets[warpIdInBlock][warp.thread_rank()] = workSegmentOffset;
+            // if(batch32 == 0){
+            //     printf("workSegmentId %d, workSegmentLength %d, workSegmentOffset %lu\n", 
+            //         workSegmentId, workSegmentLength, workSegmentOffset);
+            // }
+            warp.sync();
+    
+                    
+            {
+               
+    
+                if constexpr(false && !is_power_of_two(maxUintsPerThread)){
+                    if(batch32 != numBatches-1){
+                        for(int loadLane = warp.thread_rank(); loadLane < maxUintsPerThread; loadLane += warp.num_threads()){
+                            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                                const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                                const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                                const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                                if(loadLane < segmentUints){
+                                    //smem.elements[warpIdInBlock][loadLane][localLoadSegmentId] = segmentPtr[loadLane];
+                                    cuda::memcpy_async(
+                                        &smem.elements[warpIdInBlock][loadLane][localLoadSegmentId],
+                                        &segmentPtr[loadLane],
+                                        cuda::aligned_size_t<4>(sizeof(uint32_t)),
+                                        warpBarrier
+                                    );
+                                }
+                            }
+                        }
+                    }else{
+                        const int numSegmentsInBatch = cuda::std::min(32, numSegments - batch32 * 32);
+                        for(int loadLane = warp.thread_rank(); loadLane < maxUintsPerThread; loadLane += warp.num_threads()){
+                            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                if(localLoadSegmentId < numSegmentsInBatch){
+                                    const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                                    const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                                    const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                                    if(loadLane < segmentUints){
+                                        //smem.elements[warpIdInBlock][loadLane][localLoadSegmentId] = segmentPtr[loadLane];
+                                        cuda::memcpy_async(
+                                            &smem.elements[warpIdInBlock][loadLane][localLoadSegmentId],
+                                            &segmentPtr[loadLane],
+                                            cuda::aligned_size_t<4>(sizeof(uint32_t)),
+                                            warpBarrier
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }else{
+                    // #pragma unroll 32
+                    for(int ui = 0; ui < maxUintsPerThread; ui++){
+                        const int k = ui * warp.num_threads() + warp.thread_rank();
+                        const int localLoadSegmentId = k / maxUintsPerThread;
+                        const int loadLane = k % maxUintsPerThread;
+        
+                        // if(localLoadSegmentId < 32){
+                            const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                            const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                            const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                            const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                            if(loadLane < segmentUints){
+                                //smem.elements[warpIdInBlock][loadLane][localLoadSegmentId] = segmentPtr[loadLane];
+                                cuda::memcpy_async(
+                                    &smem.elements[warpIdInBlock][loadLane][localLoadSegmentId],
+                                    &segmentPtr[loadLane],
+                                    cuda::aligned_size_t<4>(sizeof(uint32_t)),
+                                    warpBarrier
+                                );
+                            }
+                        // }
+                    }
                 }
+            }
+    
+            // warp.sync();
+            warpBarrier.arrive_and_wait();
+    
+    
+            #if 1
+            if(workSegmentId < numSegments){
+                char prev = 0;
+                int count = 0;
+                int startOfRun = 0;
+                int numRuns = 0;
+                
+    
+                for(int uintindex = 0; uintindex < workSegmentUints; uintindex++){
+                    uint32_t current4 = smem.elements[warpIdInBlock][uintindex][warp.thread_rank()];
+                    alignas(4) char current4chars[4];
+                    memcpy(&current4chars, &current4, 4);
+    
+                    // if(workSegmentId == 444){
+                    //     printf("uintindex %d, load %2d %2d %2d %2d from %p\n", 
+                    //         uintindex,
+                    //         current4chars[0], current4chars[1], current4chars[2], current4chars[3],
+                    //         (void*)&smem.elements[warpIdInBlock][uintindex][warp.thread_rank()]
+                    //     );
+                    // }
+                    
+                    if(uintindex == 0){
+                        prev = current4chars[0];
+                        //smem.runBeginPositions[warpIdInBlock][numRuns][warp.thread_rank()] = startOfRun;
+                        numRuns++;
+                    }
+                    for(int posIn4 = 0; posIn4 < 4; posIn4++){
+                        const int posInSegment = uintindex * 4 + posIn4;
+                        if(posInSegment < workSegmentLength){
+                            char cur = current4chars[posIn4];
+                            // if(workSegmentId == 444){
+                            //     printf("posInSegment %d, prev %d, prevcount %d, cur %d\n", posInSegment, prev, count, cur);
+                            // }
+                            if(cur == prev){
+                                count++;
+                            }else{
+                                if(count >= maskingThreshold){
+                                        // if(workSegmentId == 444){
+                                        //     printf("masking loop %d - %d\n", startOfRun, posInSegment);
+                                        // }
+    
+                                        #if 1
+                                        for(int i = startOfRun; i < posInSegment; i++){
+                                            const int uindex2 = i / 4;
+                                            const int posui2 = i % 4;
+                                            ((char*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                                        }
+                                        #else
+    
+                                        const int nextborder = cuda::round_up(startOfRun, 4);
+                                        const int lastborder = cuda::round_down(posInSegment, 4);
+    
+                                        for(int i = startOfRun; i < nextborder; i++){
+                                            const int uindex2 = i / 4;
+                                            const int posui2 = i % 4;
+                                            ((char*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                                        }
+    
+                                        for(int i = nextborder; i < lastborder; i += 4){
+                                            const int uindex2 = i / 4;
+                                            ((char4*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[0] 
+                                                = make_char4(maskingLetter, maskingLetter, maskingLetter, maskingLetter);
+                                        }
+    
+                                        for(int i = lastborder; i < posInSegment; i++){
+                                            const int uindex2 = i / 4;
+                                            const int posui2 = i % 4;
+                                            ((char*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                                        }
+    
+                                        #endif
+                                }
+                                prev = cur;
+                                count = 1;
+                                startOfRun = posInSegment;
+    
+                                //smem.runBeginPositions[warpIdInBlock][numRuns][warp.thread_rank()] = startOfRun;
+                                numRuns++;
+                            }
+                        }
+                    }
+                }
+                //handle last run
+                if(count >= maskingThreshold){
+    
+                    // if(workSegmentId == 444){
+                    //     printf("mask last run, startOfRun %d, workSegmentLength %d\n", startOfRun, workSegmentLength);
+                    // }
+                    for(int i = startOfRun; i < workSegmentLength; i++){
+                        const int uindex2 = i / 4;
+                        const int posui2 = i % 4;
+                        ((char*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                    }
+                }
+        
+                if(applyExtraPaddingLetter){
+                    for(int i = workSegmentLength; i < cuda::round_up(workSegmentLength,4); i++){
+                        const int uindex2 = i / 4;
+                        const int posui2 = i % 4;
+                        ((char*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = paddingLetter;
+                    }
+                }
+            }
+            #endif
+    
+            //wait until masking is done in smem
+            warp.sync();
+    
+            //write smem back to gmem (inverse operation of loading )
+
+            #if 1
+            for(int ui = 0; ui < maxUintsPerThread; ui++){
+                const int k = ui * warp.num_threads() + warp.thread_rank();
+                const int localLoadSegmentId = k / maxUintsPerThread;
+                const int loadLane = k % maxUintsPerThread;
+    
+                // if(localLoadSegmentId < 32){
+                    const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                    const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                    uint32_t* const segmentPtr = (uint32_t*)(d_outputData + segmentOffset);
+                    if(loadLane < segmentUints){
+                        segmentPtr[loadLane] = smem.elements[warpIdInBlock][loadLane][localLoadSegmentId];
+                    }
+                // }
+            }
+            #else
+
+            const int numSegmentsInBatch = cuda::std::min(32, numSegments - batch32 * 32);
+            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                // if(localLoadSegmentId < numSegmentsInBatch){
+                    const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                    const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                    uint32_t* const segmentPtr = (uint32_t*)(d_outputData + segmentOffset);
+
+                    for(int loadLane = warp.thread_rank(); loadLane < segmentUints; loadLane += warp.num_threads()){
+                        segmentPtr[loadLane] = smem.elements[warpIdInBlock][loadLane][localLoadSegmentId];
+                    }
+                // }
+            }
+
+            #endif
+    
+            //wait until smem can be re-used
+            warp.sync();
+    
+        }
+    }
+    
+    
+    template<int blocksize, int maxSegmentLength, class InputOffsetIterator, class InputTransformOp>
+    void callSingleTileAsyncLoadKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp,
+        cudaStream_t stream
+    ){
+        int deviceId;
+        int numSMs;
+        CUDACHECK(cudaGetDevice(&deviceId));
+        CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
+
+        int maxBlocksPerSM = 0;
+    
+        constexpr int maxUintsPerThread = maxSegmentLength / 4;
+        constexpr int numWarpsInBlock = blocksize / 32;
+        auto kernel = singleTileAsyncLoadKernel<blocksize, maxSegmentLength, InputOffsetIterator, InputTransformOp>;
+        using SmemType = SingleTileKernel1Smem<numWarpsInBlock, maxUintsPerThread>;
+    
+        int smembytes = sizeof(SmemType);
+    
+        if(smembytes > 48*1024){
+            cudaError_t status = cudaFuncSetAttribute(reinterpret_cast<const void*>(kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, smembytes);
+            if(status != cudaSuccess){
+                cudaGetLastError();
+                throw std::runtime_error("Unable to set cudaFuncAttributeMaxDynamicSharedMemorySize to " + std::to_string(smembytes));
+            }
+        }
+    
+        CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &maxBlocksPerSM,
+            kernel,
+            blocksize, 
+            smembytes
+        ));
+        
+        const int numBlocks = numSMs * maxBlocksPerSM;
+        
+        // std::cout << "numSegments "  << numSegments << ", num blocks " << numBlocks << "\n";
+
+        #ifdef WITH_TIMING
+        helpers::GpuTimer timer1("maskingsinglethread::singleTileAsyncLoadKernel<" + std::to_string(blocksize) + "," + std::to_string(maxSegmentLength) + ">");
+        #endif
+        kernel<<<numBlocks, blocksize, smembytes, stream>>>(
+            d_outputData,
+            d_lengths,
+            d_offsets,
+            d_inputData,
+            numSegments,
+            maskingThreshold,
+            maskingLetter,
+            applyExtraPaddingLetter,
+            paddingLetter,
+            inputTransformOp
+        );
+        #ifdef WITH_TIMING
+        timer1.print();
+        #endif
+    }
+#endif // defined(__CUDACC__)
+
+
+
+
+    template<int numWarpsInBlock, int smemMaxUintsPerTile, int maxMaskingThreshold>
+    struct MultiTileKernelSmem{
+        static constexpr int extraMaskingUints = cuda::ceil_div(maxMaskingThreshold, 4);
+
+        uint32_t elements[numWarpsInBlock][smemMaxUintsPerTile + extraMaskingUints][32+1];
+        int segmentLengths[numWarpsInBlock][32];
+        size_t segmentOffsets[numWarpsInBlock][32];
+    };
+
+    template<int blocksize, int smemMaxPositionsPerTile, int maxMaskingThreshold, class InputOffsetIterator, class InputTransformOp>
+    __global__
+    void multiTileKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp
+    ){
+        __builtin_assume(blockDim.x == blocksize);
+        static_assert(smemMaxPositionsPerTile % 4 == 0);
+        
+        auto block = cooperative_groups::this_thread_block();
+        auto warp = cooperative_groups::tiled_partition<32>(block);
+        
+        constexpr int numWarpsInBlock = blocksize / 32;
+        const int numWarpsInGrid = numWarpsInBlock * gridDim.x;
+        const int warpIdInBlock = warp.meta_group_rank();
+        const int warpIdInGrid = (threadIdx.x + blockIdx.x * blockDim.x) / 32;
+        
+        static_assert(smemMaxPositionsPerTile % 4 == 0);
+        constexpr int smemMaxUintsPerTile = smemMaxPositionsPerTile / 4;
+        constexpr int extraMaskingUints = cuda::ceil_div(maxMaskingThreshold, 4);
+
+        using Smem = MultiTileKernelSmem<numWarpsInBlock, smemMaxUintsPerTile, maxMaskingThreshold>;
+        static_assert(Smem::extraMaskingUints == extraMaskingUints);
+        extern __shared__ char externsmem[];
+        Smem& smem = *((Smem*)externsmem);
+
+        auto applyInputTransform = [&](uint32_t data){
+            alignas(4) char elements[4];
+            memcpy(&elements[0], &data, 4);
+            for(int i = 0; i < 4; i++){
+                elements[i] = inputTransformOp(elements[i]);
+            }
+            memcpy(&data, &elements[0], 4);
+            return data;
+        };
+
+        //each warp processes 32 sequences
+        const int numBatches = cuda::ceil_div(numSegments, 32);
+        for(int batch32 = warpIdInGrid; batch32 < numBatches; batch32 += numWarpsInGrid){
+            const int workSegmentId = batch32 * 32 + warp.thread_rank();
+            int workSegmentLength = 0;
+            size_t workSegmentOffset = 0;
+            if(workSegmentId < numSegments){
+                workSegmentLength = d_lengths[workSegmentId];
+                workSegmentOffset = d_offsets[workSegmentId];
+            }
+            const int workSegmentUints = cuda::ceil_div(workSegmentLength, 4);
+            const int workSegmentNumTiles = cuda::ceil_div(workSegmentUints, smemMaxUintsPerTile);
+            
+            smem.segmentLengths[warpIdInBlock][warp.thread_rank()] = workSegmentLength;
+            smem.segmentOffsets[warpIdInBlock][warp.thread_rank()] = workSegmentOffset;
+
+            //wait for smem lengths and offsets
+            warp.sync();
+
+            int maximumSegmentLengthInBatch = compatibility::group_reduce_max(warp, workSegmentLength);
+
+            //each segment/sequence is split into tiles of size smemMaxPositionsPerTile
+            const int maxNumTiles = cuda::ceil_div(maximumSegmentLengthInBatch, smemMaxPositionsPerTile);
+            const int numSegmentsInBatch = cuda::std::min(32, numSegments - batch32 * 32);
+
+            //the current masking state
+            char prev = 0;
+            int count = 0;
+            int startOfRunInSmem = 0;
+            int numRuns = 0;
+            int numMaskedRuns = 0;
+
+            for(int tileNr = 0; tileNr < maxNumTiles; tileNr++){
+
+                //for each sequence in batch, load current tile into smem. tiles are loaded collaboratively and stored transposed to smem
+                {                        
+                    #if 0
+                        uint32_t tmp[32];                            
+                        if(batch32 != numBatches-1){
+                            for(int smemLoadLane = warp.thread_rank(); smemLoadLane < (extraMaskingUints + smemMaxUintsPerTile); smemLoadLane += warp.num_threads()){
+                                const int globalLoadLane = tileNr * (smemMaxUintsPerTile) + smemLoadLane;
+                                for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                    const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                                    const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                                    const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                                    if(globalLoadLane < segmentUints){
+                                        tmp[localLoadSegmentId] = segmentPtr[globalLoadLane];
+                                    }
+                                }
+                                for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                    smem.elements[warpIdInBlock][smemLoadLane][localLoadSegmentId] 
+                                        = applyInputTransform(tmp[localLoadSegmentId]);
+                                }
+                            }
+                        }else{
+                            for(int smemLoadLane = warp.thread_rank(); smemLoadLane < (extraMaskingUints + smemMaxUintsPerTile); smemLoadLane += warp.num_threads()){
+                                const int globalLoadLane = tileNr * (smemMaxUintsPerTile) + smemLoadLane;
+                                for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                    if(localLoadSegmentId < numSegmentsInBatch){
+                                        const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                                        const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                                        const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                                        const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                                        if(globalLoadLane < segmentUints){
+                                            tmp[localLoadSegmentId] = segmentPtr[globalLoadLane];
+                                        }
+                                    }
+                                }
+                                for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                    smem.elements[warpIdInBlock][smemLoadLane][localLoadSegmentId] 
+                                        = applyInputTransform(tmp[localLoadSegmentId]);
+                                }
+                            }
+                        }
+                    #else
+                        uint32_t tmp[(extraMaskingUints + smemMaxUintsPerTile)];
+                        
+                        for(int loadNr = 0; loadNr < (extraMaskingUints + smemMaxUintsPerTile); loadNr++){
+                            const int k = loadNr * warp.num_threads() + warp.thread_rank();
+
+                            const int localLoadSegmentId = k / (extraMaskingUints + smemMaxUintsPerTile);
+                            const int smemLoadLane = (k % (extraMaskingUints + smemMaxUintsPerTile));
+                            const int globalLoadLane = tileNr * (smemMaxUintsPerTile) + smemLoadLane;
+
+                            const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                            const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                            const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                            const uint32_t* segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+
+                            if(globalLoadLane < segmentUints){
+                                tmp[loadNr] = segmentPtr[globalLoadLane];
+                            }
+                        }
+                        for(int loadNr = 0; loadNr < (extraMaskingUints + smemMaxUintsPerTile); loadNr++){
+                            const int k = loadNr * warp.num_threads() + warp.thread_rank();
+                            const int localLoadSegmentId = k / (extraMaskingUints + smemMaxUintsPerTile);
+                            const int smemLoadLane = (k % (extraMaskingUints + smemMaxUintsPerTile));
+
+                            smem.elements[warpIdInBlock][smemLoadLane][localLoadSegmentId] 
+                                = applyInputTransform(tmp[loadNr]);
+                        }
+                    #endif
+                }
+
+                //wait until tiles are loaded to smem
+                warp.sync();
+
+                #if 1
+                if(workSegmentId < numSegments && tileNr < workSegmentNumTiles){
+                    const int alreadyProcessedUints = tileNr * smemMaxUintsPerTile;
+                    const int numUintsToProcess = cuda::std::min(smemMaxUintsPerTile, workSegmentUints - alreadyProcessedUints);
+
+                    
+                    for(int uintindex = 0; uintindex < numUintsToProcess; uintindex++){
+                        uint32_t current4 = smem.elements[warpIdInBlock][uintindex][warp.thread_rank()];
+                        alignas(4) char current4chars[4];
+                        memcpy(&current4chars, &current4, 4);
+
+                        if(tileNr == 0 && uintindex == 0){
+                            prev = current4chars[0];
+                            numRuns++;
+                        }
+                        for(int posIn4 = 0; posIn4 < 4; posIn4++){
+                            const int posInSegmentSmem = uintindex * 4 + posIn4;
+                            const int posInSegment = posInSegmentSmem + tileNr * smemMaxPositionsPerTile;
+                            if(posInSegment < workSegmentLength){
+                                char cur = current4chars[posIn4];
+                                if(cur == prev){
+                                    count++;
+                                }else{
+                                    if(count >= maskingThreshold){
+                                        for(int i = startOfRunInSmem; i < posInSegmentSmem; i++){
+                                            const int uindex2 = i / 4;
+                                            const int posui2 = i % 4;
+                                            ((char*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                                        }
+                                        numMaskedRuns++;
+                                    }
+                                    prev = cur;
+                                    count = 1;
+                                    startOfRunInSmem = posInSegmentSmem;
+        
+                                    numRuns++;
+                                }
+                            }
+                        }
+                    }
+
+                    // if we processed a tile which is not the last tile, 
+                    // process the extra masking uints to handle overlap with next tile
+
+                    if(tileNr < workSegmentNumTiles-1){
+                        // if(workSegmentId == 842){
+                        //     printf("tileNr %d, prev %d, count %d, startOfRunInSmem %d\n",
+                        //         tileNr, prev, count, startOfRunInSmem
+                        //     );
+                        // }
+                        const int count_backup = count;
+                        bool done = false;
+                        //check if the current run continues with a total length of at least maskingThreshold
+                        for(int uintindex = numUintsToProcess; uintindex < numUintsToProcess + extraMaskingUints; uintindex++){
+                            if(!done){
+                                uint32_t current4 = smem.elements[warpIdInBlock][uintindex][warp.thread_rank()];
+                                alignas(4) char current4chars[4];
+                                memcpy(&current4chars, &current4, 4);
+
+                                for(int posIn4 = 0; posIn4 < 4; posIn4++){
+                                    // const int posInSegmentSmem = uintindex * 4 + posIn4;
+                                    char cur = current4chars[posIn4];
+                                    if(cur == prev){
+                                        count++;
+                                    }else{
+                                        done = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if(count >= maskingThreshold){
+                            // the run continued long enough, do mask
+                            for(int i = startOfRunInSmem; i < 4*numUintsToProcess; i++){
+                                const int uindex2 = i / 4;
+                                const int posui2 = i % 4;
+                                ((char*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                            }
+                            numMaskedRuns++;
+                        }
+                        //for next tile, run begins at begin of smem tile
+                        startOfRunInSmem = 0;
+                        count = count_backup;
+                    }else{
+                        //we processed the last tile of sequence.
+                        const int numPositionsInLastTile = workSegmentLength - alreadyProcessedUints * 4;
+                        //handle last run
+                        if(count >= maskingThreshold){
+                            
+                            for(int i = startOfRunInSmem; i < numPositionsInLastTile; i++){
+                                const int uindex2 = i / 4;
+                                const int posui2 = i % 4;
+                                ((char*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                            }
+                            numMaskedRuns++;
+                        }
+                        if(applyExtraPaddingLetter){
+                            for(int i = numPositionsInLastTile; i < cuda::round_up(numPositionsInLastTile,4); i++){
+                                const int uindex2 = i / 4;
+                                const int posui2 = i % 4;
+                                // assert(uindex2 < (extraMaskingUints + smemMaxUintsPerTile));
+                                // assert(i < smemMaxPositionsPerTile);
+                                // printf("uindex2 %d, posui2 %d, numPositionsInLastTile %d %d\n", 
+                                //     uindex2, posui2, numPositionsInLastTile, cuda::round_up(numPositionsInLastTile,4));
+                                ((char*)&smem.elements[warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = paddingLetter;
+                            }
+                        }
+                        // //debug
+                        // ((char*)&smem.elements[warpIdInBlock][numMaskedRuns / 4][warp.thread_rank()])[0] = paddingLetter;
+                    }
+                }
+                
+                //wait until tiles are processed in smem
+                warp.sync();
+                #endif
+
+                //write smem tiles back to gmem
+                {
+                    #if 1
+                        const int maxPositionsToLoadPerSequenceWithoutExtra = cuda::std::min(
+                            smemMaxPositionsPerTile, 
+                            maximumSegmentLengthInBatch - tileNr * smemMaxPositionsPerTile
+                        );
+                        const int maxUintsToLoadPerSequenceWithoutExtra = cuda::ceil_div(maxPositionsToLoadPerSequenceWithoutExtra, 4);
+                        const int maxUintsToLoadPerSequence = extraMaskingUints + maxUintsToLoadPerSequenceWithoutExtra;
+                        const int maxUintsToLoad = warp.num_threads() * maxUintsToLoadPerSequence;
+                        
+                        for(int k = warp.thread_rank(); k < maxUintsToLoad; k += warp.num_threads()){
+                            const int localLoadSegmentId = k / maxUintsToLoadPerSequence;
+                            const int smemLoadLane = (k % maxUintsToLoadPerSequence);
+                            const int globalLoadLane = tileNr * smemMaxUintsPerTile + smemLoadLane;
+                            // const int loadSegmentId = batch32 * 32 + localLoadSegmentId;
+                            
+
+                            const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                            const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                            const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                            uint32_t* const segmentPtr = (uint32_t*)(d_outputData + segmentOffset);
+
+                            if(globalLoadLane < segmentUints){
+                                segmentPtr[globalLoadLane] = smem.elements[warpIdInBlock][smemLoadLane][localLoadSegmentId];
+                            }
+                        }
+                    #else
+                        for(int ui = 0; ui < smemMaxUintsPerTile; ui++){
+                            const int k = ui * warp.num_threads() + warp.thread_rank();
+                            const int localLoadSegmentId = k / smemMaxUintsPerTile;
+                            const int smemLoadLane = k % smemMaxUintsPerTile;
+                            const int globalLoadLane = tileNr * smemMaxUintsPerTile + smemLoadLane;
+                
+                            // if(localLoadSegmentId < 32){
+                                const int segmentLength = smem.segmentLengths[warpIdInBlock][localLoadSegmentId];
+                                const size_t segmentOffset = smem.segmentOffsets[warpIdInBlock][localLoadSegmentId];
+                                const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                                uint32_t* const segmentPtr = (uint32_t*)(d_outputData + segmentOffset);
+                                if(globalLoadLane < segmentUints){
+                                    segmentPtr[globalLoadLane] = smem.elements[warpIdInBlock][smemLoadLane][localLoadSegmentId];
+                                }
+                            // }
+                        }
+                    #endif
+                }
+                
+
+                //wait until smem can be re-used for next chunk
                 warp.sync();
             }
+        }
 
 
-            if constexpr(!isIdentityTransform){
-                // uint4* vectorsmem = reinterpret_cast<uint4*>(&smem.chunkElements[warpIdInBlock][0]);
-                // for(int i = warp.thread_rank(); i < cuda::ceil_div(numInChunk,16); i += warp.size()){
-                //     uint4 tmp = vectorsmem[i];
-                //     alignas(16) char letters[16];
-                //     memcpy(&letters[0], &tmp, 16);
+    }
 
-                //     #pragma unroll
-                //     for(int k = 0; k < 16; k++){
-                //         letters[k] = inputTransformOp(letters[k]);
-                //     }
+    template<int blocksize, int smemMaxPositionsPerTile, int maxMaskingThreshold, class InputOffsetIterator, class InputTransformOp>
+    void callMultiTileKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp,
+        cudaStream_t stream
+    ){
+        if(maskingThreshold > maxMaskingThreshold){
+            throw std::runtime_error("maskingThreshold > maxMaskingThreshold");
+        }
+        int deviceId;
+        int numSMs;
+        CUDACHECK(cudaGetDevice(&deviceId));
+        CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
 
-                //     memcpy(&tmp, &letters[0], 16);
+        int maxBlocksPerSM = 0;
 
-                //     vectorsmem[i] = tmp;
-                // }
-                // warp.sync();
-            }
-            
+        constexpr int smemMaxUintsPerTile = smemMaxPositionsPerTile / 4;
+        constexpr int numWarpsInBlock = blocksize / 32;
+        auto kernel = multiTileKernel<blocksize, smemMaxPositionsPerTile, maxMaskingThreshold, InputOffsetIterator, InputTransformOp>;
+        using SmemType = MultiTileKernelSmem<numWarpsInBlock, smemMaxUintsPerTile, maxMaskingThreshold>;
 
+        int smembytes = sizeof(SmemType);
 
-
-
-            int firstOutputElementIndex = chunkBegin;
-            if(firstOutputElementIndex > 0){
-                firstOutputElementIndex += (maskingThreshold-1);
-            }
-            int lastOutputElementIndex_excl = chunkEnd_excl;
-            if(lastOutputElementIndex_excl < segmentSize){
-                lastOutputElementIndex_excl -= (maskingThreshold-1);
-            }
-            // if(segmentId == 11){
-            // if(warp.thread_rank() == 0){
-            //     printf("chunkBegin %d, chunkEnd_excl %d, firstOutputElementIndex %d, lastOutputElementIndex_excl %d\n", 
-            //         chunkBegin, chunkEnd_excl, firstOutputElementIndex, lastOutputElementIndex_excl);
-            // }
-            // }
-
-            for(int elementIndex = firstOutputElementIndex + warp.thread_rank(); elementIndex < lastOutputElementIndex_excl; elementIndex += warp.size()){
-                const int indexInSmem = elementIndex - chunkBegin;
-                //const char myLetter = inputTransformOp(smem.chunkElements[warpIdInBlock][indexInSmem]);
-                const char myLetter = (smem.chunkElements[warpIdInBlock][indexInSmem]);
-
-                int count = 1; //account for my letter
-                //check to the left
-                for(int i = indexInSmem - 1; i >= cuda::std::max(0, indexInSmem - maskingThreshold + 1); i--){
-                    //const char otherLetter = inputTransformOp(smem.chunkElements[warpIdInBlock][i]);
-                    const char otherLetter = (smem.chunkElements[warpIdInBlock][i]);
-                    if(myLetter == otherLetter){
-                        count++;
-                    }else{
-                        break;
-                    }
-                }
-
-                //check to the right
-                for(int64_t i = indexInSmem + 1; i < cuda::std::min(numInChunk, indexInSmem + maskingThreshold); i++){
-                    //const char otherLetter = inputTransformOp(smem.chunkElements[warpIdInBlock][i]);
-                    const char otherLetter = (smem.chunkElements[warpIdInBlock][i]);
-                    if(myLetter == otherLetter){
-                        count++;
-                        if(count >= maskingThreshold){
-                            break;
-                        }
-                    }else{
-                        break;
-                    }
-                }
-
-                // if(segmentId == 11){
-                //     if(elementIndex >= 10630){
-                //         printf("elementIndex %d, letter %d, count %d\n", elementIndex, int(myLetter), count);
-                //     }
-                // }
-
-                if(count >= maskingThreshold){
-                    segmentOutputData[elementIndex] = maskingLetter;
-                }else{
-                    segmentOutputData[elementIndex] = myLetter;
-                }
+        if(smembytes > 48*1024){
+            cudaError_t status = cudaFuncSetAttribute(reinterpret_cast<const void*>(kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, smembytes);
+            if(status != cudaSuccess){
+                cudaGetLastError();
+                throw std::runtime_error("Unable to set cudaFuncAttributeMaxDynamicSharedMemorySize to " + std::to_string(smembytes));
             }
         }
 
-        //apply 4-byte padding
-        const int paddedLength = cuda::ceil_div(segmentSize, 4) * 4;
-        if(segmentSize + warp.thread_rank() < paddedLength){
-            segmentOutputData[segmentSize + warp.thread_rank()] = paddingLetter;
+        CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &maxBlocksPerSM,
+            kernel,
+            blocksize, 
+            smembytes
+        ));   
+
+        const int numBlocks = numSMs * maxBlocksPerSM;
+        
+        // std::cout << "numSegments "  << numSegments << ", num blocks " << numBlocks << "\n";
+
+        #ifdef WITH_TIMING
+        helpers::GpuTimer timer1("maskingsinglethread::multiTileKernel<" + std::to_string(blocksize) + "," + std::to_string(smemMaxPositionsPerTile) + ">");
+        #endif
+        kernel<<<numBlocks, blocksize, smembytes, stream>>>(
+            d_outputData,
+            d_lengths,
+            d_offsets,
+            d_inputData,
+            numSegments,
+            maskingThreshold,
+            maskingLetter,
+            applyExtraPaddingLetter,
+            paddingLetter,
+            inputTransformOp
+        );
+        #ifdef WITH_TIMING
+        timer1.print();
+        #endif
+    }
+
+
+
+
+
+    template<int numWarpsInBlock, int maxUintsPerThread, int numStages>
+    struct SingleTileStagedKernel1Smem{
+        uint32_t elements[1][numWarpsInBlock][maxUintsPerThread][32+1];
+        // uint32_t elements[numWarpsInBlock][maxUintsPerThread][32+1];
+        int segmentLengths[numStages][numWarpsInBlock][32];
+        size_t segmentOffsets[numStages][numWarpsInBlock][32];
+    };
+
+
+    template<int blocksize, int maxSegmentLength, int numStages, class InputOffsetIterator, class InputTransformOp>
+    __global__
+    void singleTileStagedKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp
+    ){
+        
+        __builtin_assume(blockDim.x == blocksize);
+        static_assert(maxSegmentLength % 4 == 0);
+        
+        auto block = cooperative_groups::this_thread_block();
+        auto warp = cooperative_groups::tiled_partition<32>(block);
+        
+        constexpr int numWarpsInBlock = blocksize / 32;
+        const int numWarpsInGrid = numWarpsInBlock * gridDim.x;
+        const int warpIdInBlock = warp.meta_group_rank();
+        const int warpIdInGrid = (threadIdx.x + blockIdx.x * blockDim.x) / 32;
+        
+        constexpr int maxUintsPerThread = maxSegmentLength / 4;
+        //static_assert(maxUintsPerThread <= 32);
+        if constexpr(maxUintsPerThread > 32){
+            return;
         }
-    }
-   
-}
+    
+        using Smem = SingleTileStagedKernel1Smem<numWarpsInBlock, maxUintsPerThread, numStages>;
+        extern __shared__ char externsmem[];
+        Smem& smem = *((Smem*)externsmem);
 
-
-
-/*
-    Requirements:
-        sequence[i] has length inputLengths[i] and begins at input position inputOffsets[i]
-        sequence[i] is padded to 4 byte boundary
-        d_outputData must not overlap d_inputData
-        d_outputData must be able to contain 4-byte padded sequences
-*/
-template<class InputTransformOp, class InputDataIterator, class InputOffsetIterator, class OutputOffsetIterator>
-void maskSequences_custom_kernel_impl5(
-    char* d_outputData,
-    OutputOffsetIterator d_outputOffsets,
-    InputDataIterator d_inputData, 
-    const int* d_inputLengths, //size numInputSequences
-    InputOffsetIterator d_inputOffsets, //size numInputSequences
-    size_t totalInputElements,
-    int numInputSequences,
-    int maskingThreshold, // replace letters in all repeats >= maskingThreshold by masking maskingLetter
-    char maskingLetter,
-    char paddingLetter, //to pad output sequences to 4 byte boundary
-    InputTransformOp inputTransformOp, // input letters are given by inputTransformOp(d_inputData[i])
-    cudaStream_t stream
-){
-    constexpr int maximumChunkSize = 1024;
-
-    if(2*maskingThreshold >= maximumChunkSize){
-        throw std::runtime_error("maskingThreshold too large for hardcoded maximumChunkSize\n");
-    }
-
-    int deviceId;
-    int numSMs;
-    int maxBlocksPerSM = 0;
-    constexpr int blocksize = 256;
-    auto kernel = maskingKernel5_smem_leftright_1warpPerSegment<blocksize, maximumChunkSize, 
-        InputTransformOp, InputDataIterator, InputOffsetIterator, OutputOffsetIterator>;
-
-    CUDACHECK(cudaGetDevice(&deviceId));
-    CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
-    CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-        &maxBlocksPerSM,
-        kernel,
-        blocksize, 
-        0
-    ));
-
-    const int requiredNumBlocks = cuda::ceil_div(numInputSequences, blocksize / 32);
-    const int numBlocks = std::min(requiredNumBlocks, numSMs*maxBlocksPerSM);
-
-    // std::cout << "numBlocks " << numBlocks << "\n";
-
-    kernel<<<numBlocks, blocksize, 0, stream>>>(
-        d_outputData,
-        d_outputOffsets,
-        d_inputData,
-        d_inputLengths,
-        d_inputOffsets,
-        totalInputElements,
-        numInputSequences,
-        maskingThreshold,
-        maskingLetter,
-        paddingLetter,
-        inputTransformOp
-    );
-    CUDACHECKASYNC;
-}
-
-
-
-
-
-
-template<int items_per_thread, int maxMaskingThreshold, class InputDataIterator, class InputOffsetIterator>
-__global__
-void maskingKernel6_reg_leftright_perSegment(
-    char* d_outputData,
-    InputDataIterator d_inputData,
-    const int* d_lengths,
-    InputOffsetIterator d_offsets,
-    int64_t totalInputElements,
-    int numSegments,
-    int maskingThreshold,
-    char maskingLetter,
-    char paddingLetter
-){
-    static_assert(maxMaskingThreshold <= 32); //this ensures that at most two item indices need to be accessed for each search iteration
-
-    constexpr int items_per_warp = 32 * items_per_thread;
-
-    auto warp = cooperative_groups::tiled_partition<32>(cooperative_groups::this_thread_block());
-    const int numWarpsInBlock = blockDim.x / 32;
-    const int numWarpsInGrid = numWarpsInBlock * gridDim.x;
-    // const int warpIdInBlock = warp.meta_group_rank();
-    const int warpIdInGrid = (threadIdx.x + blockIdx.x * blockDim.x) / 32;
-
-    constexpr int oob_element = cuda::std::numeric_limits<int>::max(); //use masking letter instead?
-
-
-    for(int segmentId = warpIdInGrid; segmentId < numSegments; segmentId += numWarpsInGrid){
-        const size_t segmentOffset = d_offsets[segmentId];
-        const int segmentSize = d_lengths[segmentId];
-        const auto segmentInputData = d_inputData + segmentOffset;
-        char* const segmentOutputData = d_outputData + segmentOffset;
-
-        for(int chunkBegin = 0; chunkBegin < segmentSize; chunkBegin += items_per_warp - 2*(maskingThreshold - 1)){
-            const int chunkEnd_excl = cuda::std::min(segmentSize, chunkBegin + items_per_warp);
-            // const int numInChunk = chunkEnd_excl - chunkBegin;
-
-            //load chunk to registers
-
-            int items[items_per_thread];
-            
-            #pragma unroll
-            for(int i = 0; i < items_per_thread; i++){
-                //striped index
-                const int index = chunkBegin + i * warp.size() + warp.thread_rank();
-                if(index < chunkEnd_excl){
-                    items[i] = segmentInputData[index];
-                }else{
-                    items[i] = oob_element;
-                }
+        auto applyInputTransform = [&](uint32_t data){
+            alignas(4) char elements[4];
+            memcpy(&elements[0], &data, 4);
+            for(int i = 0; i < 4; i++){
+                elements[i] = inputTransformOp(elements[i]);
             }
+            memcpy(&data, &elements[0], 4);
+            return data;
+        };
+    
+    
+        // if(threadIdx.x + blockIdx.x == 0){
+        //     printf("numSegments %d\n", numSegments);
+        // }
+    
+        //each warp processes 32 sequences
+        const int numBatches = cuda::ceil_div(numSegments, 32);
+        int stage = 0;
 
-            int firstOutputElementIndex = chunkBegin;
-            if(firstOutputElementIndex > 0){
-                firstOutputElementIndex += (maskingThreshold-1);
+        
+        uint32_t temploaded_current[32];
+        uint32_t temploaded_next[32];
+
+        constexpr int loadApproach = 1; //false && !is_power_of_two(maxUintsPerThread)
+
+        //load data of first batch next data
+        if(warpIdInGrid < numBatches){
+            const int fetchbatch32 = warpIdInGrid;
+            const int fetchSegmentId = fetchbatch32 * 32 + warp.thread_rank();
+            const int fetchstage = stage;
+            int fetchSegmentLength = 0;
+            size_t fetchSegmentOffset = 0;
+            if(fetchSegmentId < numSegments){
+                fetchSegmentLength = d_lengths[fetchSegmentId];
+                fetchSegmentOffset = d_offsets[fetchSegmentId];
             }
-            int lastOutputElementIndex_excl = chunkEnd_excl;
-            if(lastOutputElementIndex_excl < segmentSize){
-                lastOutputElementIndex_excl -= (maskingThreshold-1);
-            }
+            smem.segmentLengths[fetchstage][warpIdInBlock][warp.thread_rank()] = fetchSegmentLength;
+            smem.segmentOffsets[fetchstage][warpIdInBlock][warp.thread_rank()] = fetchSegmentOffset;
+            warp.sync();
 
-            //scan surrounding elements to check if run lenght meets threshold, then write to output
-            #pragma unroll
-            for(int currentIndex = 0; currentIndex < items_per_thread; currentIndex++){
-                //striped index
-                const int outputindex = chunkBegin + currentIndex * warp.size() + warp.thread_rank();
-
-                //check left and right of currentIndex to count occurences
-                int myLetter = items[currentIndex];
-                int count = 1;
-                
-                //check left
-                int leftNeighborTid = warp.thread_rank() == 0 ? warp.size() - 1 : warp.thread_rank() - 1;
-                bool stopLeft = false;
-                #pragma unroll
-                for(int distance = 1; distance < maxMaskingThreshold; distance++){
-                    if(distance < maskingThreshold){
-                        const int neighborLetterFromPrevIndex = currentIndex == 0 ? oob_element : warp.shfl(items[currentIndex-1], leftNeighborTid);
-                        const int neighborLetterFromSameIndex = warp.shfl(items[currentIndex], leftNeighborTid);
-                        const int neighborLetter = leftNeighborTid >= warp.thread_rank() ? neighborLetterFromPrevIndex : neighborLetterFromSameIndex;
-                        // if(segmentId == 1029){
-                        //     if(outputindex == 55){
-                        //         printf("left. chunkBegin %d, my thread id %d, currentIndex %d, distance %d, myLetter %d, neighborLetter %d, leftNeighborTid %d\n",
-                        //         chunkBegin, warp.thread_rank(), currentIndex, distance, myLetter, neighborLetter, leftNeighborTid);
-                        //     }
-                        // }
-                        if(neighborLetter == myLetter){
-                            if(!stopLeft){
-                                count++;
+            if constexpr(loadApproach == 0){
+                if(fetchbatch32 != numBatches-1){
+                    for(int loadLane = warp.thread_rank(); loadLane < maxUintsPerThread; loadLane += warp.num_threads()){
+                        for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                            const int segmentLength = smem.segmentLengths[fetchstage][warpIdInBlock][localLoadSegmentId];
+                            const size_t segmentOffset = smem.segmentOffsets[fetchstage][warpIdInBlock][localLoadSegmentId];
+                            const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                            const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                            if(loadLane < segmentUints){
+                                temploaded_next[localLoadSegmentId] = segmentPtr[loadLane];
                             }
-                        }else{
-                            //run which includes myLetter is finished
-                            stopLeft = true; //thread is done, but we cannot break out of the loop because shfl needs to be executed by full warp
                         }
-                        leftNeighborTid = leftNeighborTid == 0 ? warp.size() - 1 : leftNeighborTid - 1;
                     }
-                }
-
-                //check right
-                int rightNeighborTid = (warp.thread_rank() + 1) % warp.size();
-                bool stopRight = false;
-                for(int distance = 1; distance < maxMaskingThreshold; distance++){
-                    if(distance < maskingThreshold){
-                        const int neighborLetterFromNextIndex = currentIndex == items_per_thread-1 ? oob_element : warp.shfl(items[currentIndex+1], rightNeighborTid);
-                        const int neighborLetterFromSameIndex = warp.shfl(items[currentIndex], rightNeighborTid);
-                        const int neighborLetter = rightNeighborTid <= warp.thread_rank() ? neighborLetterFromNextIndex : neighborLetterFromSameIndex;
-                        // if(segmentId == 1029){
-                        //     if(outputindex == 55){
-                        //         printf("right. chunkBegin %d, my thread id %d, currentIndex %d, distance %d, myLetter %d, neighborLetter %d, rightNeighborTid %d\n",
-                        //         chunkBegin, warp.thread_rank(), currentIndex, distance, myLetter, neighborLetter, rightNeighborTid);
-                        //     }
-                        // }
-                        if(neighborLetter == myLetter){
-                            if(!stopRight){
-                                count++;
+                }else{
+                    const int numSegmentsInBatch = cuda::std::min(32, numSegments - fetchbatch32 * 32);
+                    for(int loadLane = warp.thread_rank(); loadLane < maxUintsPerThread; loadLane += warp.num_threads()){
+                        for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                            if(localLoadSegmentId < numSegmentsInBatch){
+                                const int segmentLength = smem.segmentLengths[fetchstage][warpIdInBlock][localLoadSegmentId];
+                                const size_t segmentOffset = smem.segmentOffsets[fetchstage][warpIdInBlock][localLoadSegmentId];
+                                const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                                const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                                if(loadLane < segmentUints){
+                                    temploaded_next[localLoadSegmentId] = segmentPtr[loadLane];
+                                }
                             }
-                        }else{
-                            //run which includes myLetter is finished
-                            stopRight = true; //thread is done, but we cannot break out of the loop because shfl needs to be executed by full warp
                         }
-                        rightNeighborTid = (rightNeighborTid + 1) % warp.size();
                     }
                 }
-
-
-                if(firstOutputElementIndex <= outputindex && outputindex < lastOutputElementIndex_excl){
-                    if(count >= maskingThreshold){
-                        segmentOutputData[outputindex] = maskingLetter;
-                    }else{
-                        segmentOutputData[outputindex] = myLetter;
-                    }
-                }
-
-            }
-        }
-
-        //apply 4-byte padding
-        const int paddedLength = cuda::ceil_div(segmentSize, 4) * 4;
-        if(segmentSize + warp.thread_rank() < paddedLength){
-            segmentOutputData[segmentSize + warp.thread_rank()] = paddingLetter;
-        }
-    }
-   
-}
-
-/*
-    Requirements:
-
-*/
-template<int maxMaskingThreshold, class InputDataIterator, class InputOffsetIterator>
-void maskSequences_custom_kernel_impl6(
-    char* d_outputData,
-    InputDataIterator d_inputData, //returns the letter (char) to consider for masking. each letter must be in range [0, 127]
-    const int* d_inputLengths, //size numInputSequences
-    InputOffsetIterator d_inputOffsets, //size numInputSequences
-    size_t totalInputElements,
-    int numInputSequences,
-    int maskingThreshold, // replace letters in all repeats >= maskingThreshold by masking maskingLetter
-    char maskingLetter,
-    char paddingLetter, //to pad sequences to multiple of 4 bytes
-    cudaStream_t stream
-){
-    if(maskingThreshold > maxMaskingThreshold){
-        throw std::runtime_error("maskingThreshold too large for hardcoded maxMaskingThreshold\n");
-    }
-
-    constexpr int items_per_thread = 4;
-
-    int deviceId;
-    int numSMs;
-    int maxBlocksPerSM = 0;
-    constexpr int blocksize = 256;
-    auto kernel = maskingKernel6_reg_leftright_perSegment<items_per_thread, maxMaskingThreshold, InputDataIterator, InputOffsetIterator>;
-
-    CUDACHECK(cudaGetDevice(&deviceId));
-    CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
-    CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-        &maxBlocksPerSM,
-        kernel,
-        blocksize, 
-        0
-    ));
-
-    const int requiredNumBlocks = cuda::ceil_div(numInputSequences, blocksize / 32);
-    const int numBlocks = std::min(requiredNumBlocks, numSMs*maxBlocksPerSM);
-
-    // std::cout << "numBlocks " << numBlocks << "\n";
-
-    kernel<<<numBlocks, blocksize, 0, stream>>>(
-        d_outputData,
-        d_inputData,
-        d_inputLengths,
-        d_inputOffsets,
-        totalInputElements,
-        numInputSequences,
-        maskingThreshold,
-        maskingLetter,
-        paddingLetter
-    );
-    CUDACHECKASYNC;
-}
-
-
-
-
-
-
-/*
-    In constrast to maskingKernel5 which splits input sequences into chunks, maskingKernel7 splits output sequences into chunks
-*/
-template<int blocksize, int outputChunkSize, int maxMaskingThreshold, class InputTransformOp, class InputDataIterator, class InputOffsetIterator, class OutputOffsetIterator>
-__global__
-void maskingKernel7_smem_leftright_1warpPerSegment(
-    char* d_outputData,
-    OutputOffsetIterator d_outputOffsets,
-    InputDataIterator d_inputData,
-    const int* d_lengths,
-    InputOffsetIterator d_offsets,
-    int64_t totalInputElements,
-    int numSegments,
-    int maskingThreshold,
-    char maskingLetter,
-    char paddingLetter,
-    InputTransformOp inputTransformOp
-){
-    __builtin_assume(blocksize == blockDim.x);
-    __builtin_assume(maskingThreshold <= maxMaskingThreshold);
-
-    static_assert(outputChunkSize % 16 == 0);
-    constexpr int smemNumInputElements = outputChunkSize + 2 * (cuda::ceil_div((maxMaskingThreshold-1), 16) * 16);
-    // constexpr int smemNumOutputElements = outputChunkSize;
-
-    auto warp = cooperative_groups::tiled_partition<32>(cooperative_groups::this_thread_block());
-    constexpr int numWarpsInBlock = blocksize / 32;
-    const int numWarpsInGrid = numWarpsInBlock * gridDim.x;
-    const int warpIdInBlock = warp.meta_group_rank();
-    const int warpIdInGrid = (threadIdx.x + blockIdx.x * blockDim.x) / 32;
-
-    constexpr bool isIdentityTransform = cuda::std::is_same_v<InputTransformOp, cuda::std::identity>;
-
-    constexpr int numStages = 2;
-    
-    __shared__ alignas(16) struct Smem{
-        char inputElements[numWarpsInBlock][numStages][smemNumInputElements];
-        //char outputElements[numWarpsInBlock][smemNumOutputElements];
-    } smem;
-
-
-    for(int segmentId = warpIdInGrid; segmentId < numSegments; segmentId += numWarpsInGrid){
-
-        const size_t segmentOffset = d_offsets[segmentId];
-        const int segmentSize = d_lengths[segmentId];
-        const auto segmentInputData = d_inputData + segmentOffset;
-        char* const segmentOutputData = d_outputData + segmentOffset;
-        const int numOutputChunks = cuda::ceil_div(segmentSize, outputChunkSize);
-
-        for(int outputChunk = 0, fetchChunk = 0; outputChunk < numOutputChunks; outputChunk++){
-            for (; fetchChunk < numOutputChunks && fetchChunk < (outputChunk + numStages); ++fetchChunk) {
-                const int outputChunkBegin = fetchChunk * outputChunkSize;
-                const int outputChunkEnd_excl = cuda::std::min(segmentSize, outputChunkBegin + outputChunkSize);
-                // const int numInOutputChunk = outputChunkEnd_excl - outputChunkBegin;
-    
-                const int inputChunkBegin = cuda::std::max(0, outputChunkBegin - (maskingThreshold-1));
-                const int inputChunkEnd_excl = cuda::std::min(segmentSize, outputChunkEnd_excl + (maskingThreshold-1));
-    
-                //align load begin to 4 bytes. valid since each segment begin is aligned to 4 bytes.
-                const int inputLoadFrontPadding = inputChunkBegin % 4;
-                const int inputChunkLoadBegin = inputChunkBegin - inputLoadFrontPadding;
-                //align load end to 4 bytes. valid since all segments are padded to 4 bytes
-                const int inputChunkLoadEnd_excl = cuda::ceil_div(inputChunkEnd_excl, 4) * 4;
-                const int loadSize = inputChunkLoadEnd_excl - inputChunkLoadBegin;
-                // assert(loadSize <= smemNumInputElements);
-
-                // if(segmentId == 0){
-                //     if(warp.thread_rank() == 0){
-                //         printf("fetchChunk %d, load %d elements, %d - %d, smemNumInputElements %d\n", 
-                //                 fetchChunk,loadSize, inputChunkLoadBegin,inputChunkLoadEnd_excl, smemNumInputElements);
-                //         for(int i = 0; i < 16; i++){
-                //             printf("%d ", int((segmentInputData + inputChunkLoadBegin)[i]));
-                //         }
-                //         printf("\n");
-                //     }
-                // }
-                cooperative_groups::memcpy_async(
-                    warp, 
-                    &smem.inputElements[warpIdInBlock][fetchChunk % numStages][0], 
-                    cuda::aligned_size_t<4>(smemNumInputElements), 
-                    segmentInputData + inputChunkLoadBegin, 
-                    cuda::aligned_size_t<4>(loadSize)
-                );
-            }
-            const int outputChunkBegin = outputChunk * outputChunkSize;
-            const int outputChunkEnd_excl = cuda::std::min(segmentSize, outputChunkBegin + outputChunkSize);
-            const int numInOutputChunk = outputChunkEnd_excl - outputChunkBegin;
-
-            const int inputChunkBegin = cuda::std::max(0, outputChunkBegin - (maskingThreshold-1));
-            const int inputChunkEnd_excl = cuda::std::min(segmentSize, outputChunkEnd_excl + (maskingThreshold-1));
-
-            //align load begin to 4 bytes. valid since each segment begin is aligned to 4 bytes.
-            const int inputLoadFrontPadding = inputChunkBegin % 4;
-            const int inputChunkLoadBegin = inputChunkBegin - inputLoadFrontPadding;
-            //align load end to 4 bytes. valid since all segments are padded to 4 bytes
-            const int inputChunkLoadEnd_excl = cuda::ceil_div(inputChunkEnd_excl, 4) * 4;
-            const int loadSize = inputChunkLoadEnd_excl - inputChunkLoadBegin;
-
-            //wait for async load from gmem to smem of our input chunk
-            if(outputChunk < numOutputChunks-1){
-                cooperative_groups::wait_prior<1>(warp);
-                // cooperative_groups::wait(warp);
             }else{
-                cooperative_groups::wait(warp);
+                for(int ui = 0; ui < maxUintsPerThread; ui++){
+                    const int k = ui * warp.num_threads() + warp.thread_rank();
+                    const int localLoadSegmentId = k / maxUintsPerThread;
+                    const int loadLane = k % maxUintsPerThread;
+    
+                    // if(localLoadSegmentId < 32){
+                        const int segmentLength = smem.segmentLengths[fetchstage][warpIdInBlock][localLoadSegmentId];
+                        const size_t segmentOffset = smem.segmentOffsets[fetchstage][warpIdInBlock][localLoadSegmentId];
+                        const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                        const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                        if(loadLane < segmentUints){
+                            temploaded_next[ui] = segmentPtr[loadLane];
+                        }
+                    // }
+                }
             }
+        }
 
 
-            if constexpr(!isIdentityTransform){
-                for(int i = 4 * warp.thread_rank(); i < loadSize; i += 4*warp.size()){
-                    char4 four = *reinterpret_cast<const char4*>(&smem.inputElements[warpIdInBlock][outputChunk % numStages][i]);
-                    four.x = inputTransformOp(four.x);
-                    four.y = inputTransformOp(four.y);
-                    four.z = inputTransformOp(four.z);
-                    four.w = inputTransformOp(four.w);
-                    *reinterpret_cast<char4*>(&smem.inputElements[warpIdInBlock][outputChunk % numStages][i]) = four;
+        for(int batch32 = warpIdInGrid; batch32 < numBatches; batch32 += numWarpsInGrid, stage = (stage + 1) % numStages){
+
+            //make prefetched data the current data
+            {
+                for(int i = 0; i < 32; i++){
+                    temploaded_current[i] = temploaded_next[i];
                 }
             }
 
-            const int inputOutputSmemOffset = outputChunkBegin - inputChunkLoadBegin;
-            const int inputSmemEndIndex_excl = inputChunkEnd_excl - inputChunkLoadBegin;
-            for(int outputElementLocalIndex = warp.thread_rank(); outputElementLocalIndex < numInOutputChunk; outputElementLocalIndex += warp.size()){
-
-                const int inputIndexInSmem = inputOutputSmemOffset + outputElementLocalIndex;
-                const char myLetter = (smem.inputElements[warpIdInBlock][outputChunk % numStages][inputIndexInSmem]);
-
-                // if(segmentId == 0){
-                //     if(outputChunk == 1){
-                //         if(warp.thread_rank() == 0){
-                //             printf("outputElementLocalIndex %d, inputIndexInSmem %d, myLetter %d\n", 
-                //                 outputElementLocalIndex, inputIndexInSmem, myLetter);
-                //         }
-                //     }
-                // }
-
-                int count = 1; //account for my letter
-                //check to the left
-                for(int i = inputIndexInSmem - 1; i >= cuda::std::max(0, inputIndexInSmem - maskingThreshold + 1); i--){
-                    //const char otherLetter = inputTransformOp(smem.inputElements[warpIdInBlock][i]);
-                    const char otherLetter = (smem.inputElements[warpIdInBlock][outputChunk % numStages][i]);
-                    if(myLetter == otherLetter){
-                        count++;
-                    }else{
-                        break;
-                    }
+            //prefetch next data
+            if(batch32 + numWarpsInGrid < numBatches){
+                const int fetchbatch32 = batch32 + numWarpsInGrid;
+                const int fetchSegmentId = fetchbatch32 * 32 + warp.thread_rank();
+                const int fetchstage = (stage + 1) % 2;
+                int fetchSegmentLength = 0;
+                size_t fetchSegmentOffset = 0;
+                if(fetchSegmentId < numSegments){
+                    fetchSegmentLength = d_lengths[fetchSegmentId];
+                    fetchSegmentOffset = d_offsets[fetchSegmentId];
                 }
+                smem.segmentLengths[fetchstage][warpIdInBlock][warp.thread_rank()] = fetchSegmentLength;
+                smem.segmentOffsets[fetchstage][warpIdInBlock][warp.thread_rank()] = fetchSegmentOffset;
+                warp.sync();
 
-                //check to the right
-                const int loopLimit = cuda::std::min(inputSmemEndIndex_excl, inputIndexInSmem + maskingThreshold);
-                for(int64_t i = inputIndexInSmem + 1; i < loopLimit; i++){                    
-                    //const char otherLetter = inputTransformOp(smem.chunkElements[warpIdInBlock][i]);
-                    const char otherLetter = (smem.inputElements[warpIdInBlock][outputChunk % numStages][i]);
-                    if(myLetter == otherLetter){
-                        count++;
-                        if(count >= maskingThreshold){
-                            break;
+                if constexpr(loadApproach == 0){
+                    if(fetchbatch32 != numBatches-1){
+                        for(int loadLane = warp.thread_rank(); loadLane < maxUintsPerThread; loadLane += warp.num_threads()){
+                            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                const int segmentLength = smem.segmentLengths[fetchstage][warpIdInBlock][localLoadSegmentId];
+                                const size_t segmentOffset = smem.segmentOffsets[fetchstage][warpIdInBlock][localLoadSegmentId];
+                                const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                                const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                                if(loadLane < segmentUints){
+                                    temploaded_next[localLoadSegmentId] = segmentPtr[loadLane];
+                                }
+                            }
                         }
                     }else{
+                        const int numSegmentsInBatch = cuda::std::min(32, numSegments - fetchbatch32 * 32);
+                        for(int loadLane = warp.thread_rank(); loadLane < maxUintsPerThread; loadLane += warp.num_threads()){
+                            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                                if(localLoadSegmentId < numSegmentsInBatch){
+                                    const int segmentLength = smem.segmentLengths[fetchstage][warpIdInBlock][localLoadSegmentId];
+                                    const size_t segmentOffset = smem.segmentOffsets[fetchstage][warpIdInBlock][localLoadSegmentId];
+                                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                                    const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                                    if(loadLane < segmentUints){
+                                        temploaded_next[localLoadSegmentId] = segmentPtr[loadLane];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }else{
+                    for(int ui = 0; ui < maxUintsPerThread; ui++){
+                        const int k = ui * warp.num_threads() + warp.thread_rank();
+                        const int localLoadSegmentId = k / maxUintsPerThread;
+                        const int loadLane = k % maxUintsPerThread;
+        
+                        // if(localLoadSegmentId < 32){
+                            const int segmentLength = smem.segmentLengths[fetchstage][warpIdInBlock][localLoadSegmentId];
+                            const size_t segmentOffset = smem.segmentOffsets[fetchstage][warpIdInBlock][localLoadSegmentId];
+                            const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                            const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                            if(loadLane < segmentUints){
+                                temploaded_next[ui] = segmentPtr[loadLane];
+                            }
+                        // }
+                    }
+                }
+            }
+
+            if constexpr(loadApproach == 0){
+                for(int loadLane = warp.thread_rank(); loadLane < maxUintsPerThread; loadLane += warp.num_threads()){
+                    for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                        smem.elements[0][warpIdInBlock][loadLane][localLoadSegmentId] 
+                            = applyInputTransform(temploaded_current[localLoadSegmentId]);
+                    }
+                }
+            }else{
+                for(int ui = 0; ui < maxUintsPerThread; ui++){
+                    const int k = ui * warp.num_threads() + warp.thread_rank();
+                    const int localLoadSegmentId = k / maxUintsPerThread;
+                    const int loadLane = k % maxUintsPerThread;
+    
+                    // if(localLoadSegmentId < 32){
+                        smem.elements[0][warpIdInBlock][loadLane][localLoadSegmentId] 
+                            = applyInputTransform(temploaded_current[ui]);
+                    // }
+                }
+            }
+
+
+            warp.sync();
+
+            const int workSegmentId = batch32 * 32 + warp.thread_rank();
+            int workSegmentLength = smem.segmentLengths[stage][warpIdInBlock][warp.thread_rank()];
+            size_t workSegmentOffset = smem.segmentOffsets[stage][warpIdInBlock][warp.thread_rank()];
+            const int workSegmentUints = cuda::ceil_div(workSegmentLength, 4);
+
+    
+            #if 1
+            if(workSegmentId < numSegments){
+                char prev = 0;
+                int count = 0;
+                int startOfRun = 0;
+                int numRuns = 0;
+                
+    
+                for(int uintindex = 0; uintindex < workSegmentUints; uintindex++){
+                    uint32_t current4 = smem.elements[0][warpIdInBlock][uintindex][warp.thread_rank()];
+                    alignas(4) char current4chars[4];
+                    memcpy(&current4chars, &current4, 4);
+    
+                    // if(workSegmentId == 444){
+                    //     printf("uintindex %d, load %2d %2d %2d %2d from %p\n", 
+                    //         uintindex,
+                    //         current4chars[0], current4chars[1], current4chars[2], current4chars[3],
+                    //         (void*)&smem.elements[0][warpIdInBlock][uintindex][warp.thread_rank()]
+                    //     );
+                    // }
+                    
+                    if(uintindex == 0){
+                        prev = current4chars[0];
+                        numRuns++;
+                    }
+                    for(int posIn4 = 0; posIn4 < 4; posIn4++){
+                        const int posInSegment = uintindex * 4 + posIn4;
+                        if(posInSegment < workSegmentLength){
+                            char cur = current4chars[posIn4];
+                            // if(workSegmentId == 444){
+                            //     printf("posInSegment %d, prev %d, prevcount %d, cur %d\n", posInSegment, prev, count, cur);
+                            // }
+                            if(cur == prev){
+                                count++;
+                            }else{
+                                if(count >= maskingThreshold){
+                                        // if(workSegmentId == 444){
+                                        //     printf("masking loop %d - %d\n", startOfRun, posInSegment);
+                                        // }
+    
+                                        #if 1
+                                        for(int i = startOfRun; i < posInSegment; i++){
+                                            const int uindex2 = i / 4;
+                                            const int posui2 = i % 4;
+                                            ((char*)&smem.elements[0][warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                                        }
+                                        #else
+    
+                                        const int nextborder = cuda::round_up(startOfRun, 4);
+                                        const int lastborder = cuda::round_down(posInSegment, 4);
+    
+                                        for(int i = startOfRun; i < nextborder; i++){
+                                            const int uindex2 = i / 4;
+                                            const int posui2 = i % 4;
+                                            ((char*)&smem.elements[0][warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                                        }
+    
+                                        for(int i = nextborder; i < lastborder; i += 4){
+                                            const int uindex2 = i / 4;
+                                            ((char4*)&smem.elements[0][warpIdInBlock][uindex2][warp.thread_rank()])[0] 
+                                                = make_char4(maskingLetter, maskingLetter, maskingLetter, maskingLetter);
+                                        }
+    
+                                        for(int i = lastborder; i < posInSegment; i++){
+                                            const int uindex2 = i / 4;
+                                            const int posui2 = i % 4;
+                                            ((char*)&smem.elements[0][warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                                        }
+    
+                                        #endif
+                                }
+                                prev = cur;
+                                count = 1;
+                                startOfRun = posInSegment;
+    
+                                numRuns++;
+                            }
+                        }
+                    }
+                }
+                //handle last run
+                if(count >= maskingThreshold){
+    
+                    // if(workSegmentId == 444){
+                    //     printf("mask last run, startOfRun %d, workSegmentLength %d\n", startOfRun, workSegmentLength);
+                    // }
+                    for(int i = startOfRun; i < workSegmentLength; i++){
+                        const int uindex2 = i / 4;
+                        const int posui2 = i % 4;
+                        ((char*)&smem.elements[0][warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                    }
+                }
+        
+                if(applyExtraPaddingLetter){
+                    for(int i = workSegmentLength; i < cuda::round_up(workSegmentLength,4); i++){
+                        const int uindex2 = i / 4;
+                        const int posui2 = i % 4;
+                        ((char*)&smem.elements[0][warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = paddingLetter;
+                    }
+                }
+            }
+            #endif
+    
+            //wait until masking is done in smem
+            warp.sync();
+    
+            //write smem back to gmem (inverse operation of loading )
+
+            #if 1
+            for(int ui = 0; ui < maxUintsPerThread; ui++){
+                const int k = ui * warp.num_threads() + warp.thread_rank();
+                const int localLoadSegmentId = k / maxUintsPerThread;
+                const int loadLane = k % maxUintsPerThread;
+    
+                // if(localLoadSegmentId < 32){
+                    const int segmentLength = smem.segmentLengths[stage][warpIdInBlock][localLoadSegmentId];
+                    const size_t segmentOffset = smem.segmentOffsets[stage][warpIdInBlock][localLoadSegmentId];
+                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                    uint32_t* const segmentPtr = (uint32_t*)(d_outputData + segmentOffset);
+                    if(loadLane < segmentUints){
+                        segmentPtr[loadLane] = smem.elements[0][warpIdInBlock][loadLane][localLoadSegmentId];
+                    }
+                // }
+            }
+            #else
+
+            const int numSegmentsInBatch = cuda::std::min(32, numSegments - batch32 * 32);
+            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                // if(localLoadSegmentId < numSegmentsInBatch){
+                    const int segmentLength = smem.segmentLengths[stage][warpIdInBlock][localLoadSegmentId];
+                    const size_t segmentOffset = smem.segmentOffsets[stage][warpIdInBlock][localLoadSegmentId];
+                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                    uint32_t* const segmentPtr = (uint32_t*)(d_outputData + segmentOffset);
+
+                    for(int loadLane = warp.thread_rank(); loadLane < segmentUints; loadLane += warp.num_threads()){
+                        segmentPtr[loadLane] = smem.elements[0][warpIdInBlock][loadLane][localLoadSegmentId];
+                    }
+                // }
+            }
+
+            #endif
+    
+            //wait until smem can be re-used
+            warp.sync();
+    
+        }
+    }
+    
+    
+    template<int blocksize, int maxSegmentLength, class InputOffsetIterator, class InputTransformOp>
+    void callSingleTileStagedKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp,
+        cudaStream_t stream
+    ){
+        int deviceId;
+        int numSMs;
+        CUDACHECK(cudaGetDevice(&deviceId));
+        CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
+
+        int maxBlocksPerSM = 0;
+    
+        constexpr int maxUintsPerThread = maxSegmentLength / 4;
+        constexpr int numWarpsInBlock = blocksize / 32;
+        constexpr int numStages = 2;
+        auto kernel = singleTileStagedKernel<blocksize, maxSegmentLength, numStages, InputOffsetIterator, InputTransformOp>;
+        using SmemType = SingleTileStagedKernel1Smem<numWarpsInBlock, maxUintsPerThread, numStages>;
+    
+        int smembytes = sizeof(SmemType);
+    
+        if(smembytes > 48*1024){
+            cudaError_t status = cudaFuncSetAttribute(reinterpret_cast<const void*>(kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, smembytes);
+            if(status != cudaSuccess){
+                cudaGetLastError();
+                throw std::runtime_error("Unable to set cudaFuncAttributeMaxDynamicSharedMemorySize to " + std::to_string(smembytes));
+            }
+        }
+    
+        CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &maxBlocksPerSM,
+            kernel,
+            blocksize, 
+            smembytes
+        ));
+
+        const int numBlocks = numSMs * maxBlocksPerSM;
+        
+        // std::cout << "numSegments "  << numSegments << ", num blocks " << numBlocks << "\n";
+
+        #ifdef WITH_TIMING
+        helpers::GpuTimer timer1("maskingsinglethread::singleTileStagedKernel<" + std::to_string(blocksize) + "," + std::to_string(maxSegmentLength) + ">");
+        #endif
+        kernel<<<numBlocks, blocksize, smembytes, stream>>>(
+            d_outputData,
+            d_lengths,
+            d_offsets,
+            d_inputData,
+            numSegments,
+            maskingThreshold,
+            maskingLetter,
+            applyExtraPaddingLetter,
+            paddingLetter,
+            inputTransformOp
+        );
+        #ifdef WITH_TIMING
+        timer1.print();
+        #endif
+    }
+
+#if defined(__CUDACC__)
+    template<int numWarpsInBlock, int maxUintsPerThread, int numStages>
+    struct SingleTileStagedAsyncCopyKernel1Smem{
+        uint32_t elements[2][numWarpsInBlock][maxUintsPerThread][32+1];
+        int segmentLengths[numStages][numWarpsInBlock][32];
+        size_t segmentOffsets[numStages][numWarpsInBlock][32];
+    };
+
+
+    template<int blocksize, int maxSegmentLength, int numStages, class InputOffsetIterator, class InputTransformOp>
+    __global__
+    void singleTileStagedAsyncCopyKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp
+    ){
+        __builtin_assume(blockDim.x == blocksize);
+        static_assert(maxSegmentLength % 4 == 0);
+        
+        auto block = cooperative_groups::this_thread_block();
+        auto warp = cooperative_groups::tiled_partition<32>(block);
+        
+        constexpr int numWarpsInBlock = blocksize / 32;
+        const int numWarpsInGrid = numWarpsInBlock * gridDim.x;
+        const int warpIdInBlock = warp.meta_group_rank();
+        const int warpIdInGrid = (threadIdx.x + blockIdx.x * blockDim.x) / 32;
+        
+        constexpr int maxUintsPerThread = maxSegmentLength / 4;
+        // static_assert(maxUintsPerThread <= 32);
+        if constexpr(maxUintsPerThread > 32){
+            return;
+        }
+
+        static_assert(numStages <= 2);
+
+        using Barrier = cuda::barrier<cuda::thread_scope_block>;
+        #pragma nv_diag_suppress static_var_with_dynamic_init
+        __shared__ Barrier barriers[numWarpsInBlock*numStages];
+        auto* warpBarriers = &barriers[2*warp.meta_group_rank()];
+        if(warp.thread_rank() < 2){
+            init(warpBarriers + warp.thread_rank(), warp.num_threads());
+        }
+        warp.sync();
+    
+        using Smem = SingleTileStagedAsyncCopyKernel1Smem<numWarpsInBlock, maxUintsPerThread, numStages>;
+        extern __shared__ char externsmem[];
+        Smem& smem = *((Smem*)externsmem);
+
+
+        auto applyInputTransform = [&](uint32_t data){
+            alignas(4) char elements[4];
+            memcpy(&elements[0], &data, 4);
+            for(int i = 0; i < 4; i++){
+                elements[i] = inputTransformOp(elements[i]);
+            }
+            memcpy(&data, &elements[0], 4);
+            return data;
+        };
+    
+    
+        // if(threadIdx.x + blockIdx.x == 0){
+        //     printf("numSegments %d\n", numSegments);
+        // }
+    
+        //each warp processes 32 sequences
+        const int numBatches = cuda::ceil_div(numSegments, 32);
+        int stage = 0;
+
+
+        //load data of first batch
+        Barrier::arrival_token arrivalTokens[numStages];
+
+        if(warpIdInGrid < numBatches){
+            const int fetchbatch32 = warpIdInGrid;
+            const int fetchSegmentId = fetchbatch32 * 32 + warp.thread_rank();
+            const int fetchstage = stage;
+            int fetchSegmentLength = 0;
+            size_t fetchSegmentOffset = 0;
+            if(fetchSegmentId < numSegments){
+                fetchSegmentLength = d_lengths[fetchSegmentId];
+                fetchSegmentOffset = d_offsets[fetchSegmentId];
+            }
+            smem.segmentLengths[fetchstage][warpIdInBlock][warp.thread_rank()] = fetchSegmentLength;
+            smem.segmentOffsets[fetchstage][warpIdInBlock][warp.thread_rank()] = fetchSegmentOffset;
+            warp.sync();
+
+
+            for(int ui = 0; ui < maxUintsPerThread; ui++){
+                const int k = ui * warp.num_threads() + warp.thread_rank();
+                const int localLoadSegmentId = k / maxUintsPerThread;
+                const int loadLane = k % maxUintsPerThread;
+
+                // if(localLoadSegmentId < 32){
+                    const int segmentLength = smem.segmentLengths[fetchstage][warpIdInBlock][localLoadSegmentId];
+                    const size_t segmentOffset = smem.segmentOffsets[fetchstage][warpIdInBlock][localLoadSegmentId];
+                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                    const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                    if(loadLane < segmentUints){
+                        //smem.elements[fetchstage][warpIdInBlock][loadLane][localLoadSegmentId] = segmentPtr[loadLane];
+                        cuda::memcpy_async(
+                            &smem.elements[fetchstage][warpIdInBlock][loadLane][localLoadSegmentId],
+                            &segmentPtr[loadLane],
+                            cuda::aligned_size_t<4>(sizeof(uint32_t)),
+                            warpBarriers[fetchstage]
+                        );
+                    }
+                // }
+            }
+            if(fetchstage == 0){
+                arrivalTokens[0] = warpBarriers[fetchstage].arrive();
+            }else{
+                arrivalTokens[1] = warpBarriers[fetchstage].arrive();
+            }
+        }
+
+
+        for(int batch32 = warpIdInGrid; batch32 < numBatches; batch32 += numWarpsInGrid, stage = (stage + 1) % numStages){
+
+
+            //prefetch next data
+            if(batch32 + numWarpsInGrid < numBatches){
+                const int fetchbatch32 = batch32 + numWarpsInGrid;
+                const int fetchSegmentId = fetchbatch32 * 32 + warp.thread_rank();
+                const int fetchstage = (stage + 1) % 2;
+                int fetchSegmentLength = 0;
+                size_t fetchSegmentOffset = 0;
+                if(fetchSegmentId < numSegments){
+                    fetchSegmentLength = d_lengths[fetchSegmentId];
+                    fetchSegmentOffset = d_offsets[fetchSegmentId];
+                }
+                smem.segmentLengths[fetchstage][warpIdInBlock][warp.thread_rank()] = fetchSegmentLength;
+                smem.segmentOffsets[fetchstage][warpIdInBlock][warp.thread_rank()] = fetchSegmentOffset;
+                warp.sync();
+
+                for(int ui = 0; ui < maxUintsPerThread; ui++){
+                    const int k = ui * warp.num_threads() + warp.thread_rank();
+                    const int localLoadSegmentId = k / maxUintsPerThread;
+                    const int loadLane = k % maxUintsPerThread;
+    
+                    // if(localLoadSegmentId < 32){
+                        const int segmentLength = smem.segmentLengths[fetchstage][warpIdInBlock][localLoadSegmentId];
+                        const size_t segmentOffset = smem.segmentOffsets[fetchstage][warpIdInBlock][localLoadSegmentId];
+                        const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                        const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+                        if(loadLane < segmentUints){
+                            //smem.elements[fetchstage][warpIdInBlock][loadLane][localLoadSegmentId] = segmentPtr[loadLane];
+                            cuda::memcpy_async(
+                                &smem.elements[fetchstage][warpIdInBlock][loadLane][localLoadSegmentId],
+                                &segmentPtr[loadLane],
+                                cuda::aligned_size_t<4>(sizeof(uint32_t)),
+                                warpBarriers[fetchstage]
+                            );
+                        }
+                    // }
+                }
+                if(fetchstage == 0){
+                    arrivalTokens[0] = warpBarriers[fetchstage].arrive();
+                }else{
+                    arrivalTokens[1] = warpBarriers[fetchstage].arrive();
+                }
+            }
+
+
+
+
+            
+            const int workSegmentId = batch32 * 32 + warp.thread_rank();
+            int workSegmentLength = smem.segmentLengths[stage][warpIdInBlock][warp.thread_rank()];
+            size_t workSegmentOffset = smem.segmentOffsets[stage][warpIdInBlock][warp.thread_rank()];
+            const int workSegmentUints = cuda::ceil_div(workSegmentLength, 4);
+            
+            //wait for current elements to be ready
+            if(stage == 0){
+                warpBarriers[stage].wait(std::move(arrivalTokens[0]));
+            }else{
+                warpBarriers[stage].wait(std::move(arrivalTokens[1]));
+            }
+            
+    
+            #if 1
+            if(workSegmentId < numSegments){
+                char prev = 0;
+                int count = 0;
+                int startOfRun = 0;
+                int numRuns = 0;
+                
+    
+                for(int uintindex = 0; uintindex < workSegmentUints; uintindex++){
+                    uint32_t current4 = smem.elements[stage][warpIdInBlock][uintindex][warp.thread_rank()];
+                    current4 = applyInputTransform(current4);
+                    smem.elements[stage][warpIdInBlock][uintindex][warp.thread_rank()] = current4;
+                    alignas(4) char current4chars[4];
+                    memcpy(&current4chars, &current4, 4);
+    
+                    // if(workSegmentId == 444){
+                    //     printf("uintindex %d, load %2d %2d %2d %2d from %p\n", 
+                    //         uintindex,
+                    //         current4chars[0], current4chars[1], current4chars[2], current4chars[3],
+                    //         (void*)&smem.elements[stage][warpIdInBlock][uintindex][warp.thread_rank()]
+                    //     );
+                    // }
+                    
+                    if(uintindex == 0){
+                        prev = current4chars[0];
+                        numRuns++;
+                    }
+                    for(int posIn4 = 0; posIn4 < 4; posIn4++){
+                        const int posInSegment = uintindex * 4 + posIn4;
+                        if(posInSegment < workSegmentLength){
+                            char cur = current4chars[posIn4];
+                            // if(workSegmentId == 444){
+                            //     printf("posInSegment %d, prev %d, prevcount %d, cur %d\n", posInSegment, prev, count, cur);
+                            // }
+                            if(cur == prev){
+                                count++;
+                            }else{
+                                if(count >= maskingThreshold){
+                                        // if(workSegmentId == 444){
+                                        //     printf("masking loop %d - %d\n", startOfRun, posInSegment);
+                                        // }
+    
+                                        #if 1
+                                        for(int i = startOfRun; i < posInSegment; i++){
+                                            const int uindex2 = i / 4;
+                                            const int posui2 = i % 4;
+                                            ((char*)&smem.elements[stage][warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                                        }
+                                        #else
+    
+                                        const int nextborder = cuda::round_up(startOfRun, 4);
+                                        const int lastborder = cuda::round_down(posInSegment, 4);
+    
+                                        for(int i = startOfRun; i < nextborder; i++){
+                                            const int uindex2 = i / 4;
+                                            const int posui2 = i % 4;
+                                            ((char*)&smem.elements[stage][warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                                        }
+    
+                                        for(int i = nextborder; i < lastborder; i += 4){
+                                            const int uindex2 = i / 4;
+                                            ((char4*)&smem.elements[stage][warpIdInBlock][uindex2][warp.thread_rank()])[0] 
+                                                = make_char4(maskingLetter, maskingLetter, maskingLetter, maskingLetter);
+                                        }
+    
+                                        for(int i = lastborder; i < posInSegment; i++){
+                                            const int uindex2 = i / 4;
+                                            const int posui2 = i % 4;
+                                            ((char*)&smem.elements[stage][warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                                        }
+    
+                                        #endif
+                                }
+                                prev = cur;
+                                count = 1;
+                                startOfRun = posInSegment;
+    
+                                numRuns++;
+                            }
+                        }
+                    }
+                }
+                //handle last run
+                if(count >= maskingThreshold){
+    
+                    // if(workSegmentId == 444){
+                    //     printf("mask last run, startOfRun %d, workSegmentLength %d\n", startOfRun, workSegmentLength);
+                    // }
+                    for(int i = startOfRun; i < workSegmentLength; i++){
+                        const int uindex2 = i / 4;
+                        const int posui2 = i % 4;
+                        ((char*)&smem.elements[stage][warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = maskingLetter;
+                    }
+                }
+        
+                if(applyExtraPaddingLetter){
+                    for(int i = workSegmentLength; i < cuda::round_up(workSegmentLength,4); i++){
+                        const int uindex2 = i / 4;
+                        const int posui2 = i % 4;
+                        ((char*)&smem.elements[stage][warpIdInBlock][uindex2][warp.thread_rank()])[posui2] = paddingLetter;
+                    }
+                }
+            }
+            #endif
+    
+            //wait until masking is done in smem
+            warp.sync();
+    
+            //write smem back to gmem (inverse operation of loading )
+
+            #if 1
+            for(int ui = 0; ui < maxUintsPerThread; ui++){
+                const int k = ui * warp.num_threads() + warp.thread_rank();
+                const int localLoadSegmentId = k / maxUintsPerThread;
+                const int loadLane = k % maxUintsPerThread;
+    
+                // if(localLoadSegmentId < 32){
+                    const int segmentLength = smem.segmentLengths[stage][warpIdInBlock][localLoadSegmentId];
+                    const size_t segmentOffset = smem.segmentOffsets[stage][warpIdInBlock][localLoadSegmentId];
+                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                    uint32_t* const segmentPtr = (uint32_t*)(d_outputData + segmentOffset);
+                    if(loadLane < segmentUints){
+                        segmentPtr[loadLane] = smem.elements[stage][warpIdInBlock][loadLane][localLoadSegmentId];
+                    }
+                // }
+            }
+            #else
+
+            const int numSegmentsInBatch = cuda::std::min(32, numSegments - batch32 * 32);
+            for(int localLoadSegmentId = 0; localLoadSegmentId < 32; localLoadSegmentId++){
+                // if(localLoadSegmentId < numSegmentsInBatch){
+                    const int segmentLength = smem.segmentLengths[stage][warpIdInBlock][localLoadSegmentId];
+                    const size_t segmentOffset = smem.segmentOffsets[stage][warpIdInBlock][localLoadSegmentId];
+                    const int segmentUints = cuda::ceil_div(segmentLength, 4);
+                    uint32_t* const segmentPtr = (uint32_t*)(d_outputData + segmentOffset);
+
+                    for(int loadLane = warp.thread_rank(); loadLane < segmentUints; loadLane += warp.num_threads()){
+                        segmentPtr[loadLane] = smem.elements[stage][warpIdInBlock][loadLane][localLoadSegmentId];
+                    }
+                // }
+            }
+
+            #endif
+    
+            //wait until smem can be re-used
+            warp.sync();
+    
+        }
+    }
+    
+    
+    template<int blocksize, int maxSegmentLength, class InputOffsetIterator, class InputTransformOp>
+    void callSingleTileStagedAsyncCopyKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp,
+        cudaStream_t stream
+    ){
+        int deviceId;
+        int numSMs;
+        CUDACHECK(cudaGetDevice(&deviceId));
+        CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
+
+        int maxBlocksPerSM = 0;
+    
+        constexpr int maxUintsPerThread = maxSegmentLength / 4;
+        constexpr int numWarpsInBlock = blocksize / 32;
+        constexpr int numStages = 2;
+        auto kernel = singleTileStagedAsyncCopyKernel<blocksize, maxSegmentLength, numStages, InputOffsetIterator, InputTransformOp>;
+        using SmemType = SingleTileStagedAsyncCopyKernel1Smem<numWarpsInBlock, maxUintsPerThread, numStages>;
+    
+        int smembytes = sizeof(SmemType);
+    
+        if(smembytes > 48*1024){
+            cudaError_t status = cudaFuncSetAttribute(reinterpret_cast<const void*>(kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, smembytes);
+            if(status != cudaSuccess){
+                cudaGetLastError();
+                throw std::runtime_error("Unable to set cudaFuncAttributeMaxDynamicSharedMemorySize to " + std::to_string(smembytes));
+            }
+        }
+    
+        CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &maxBlocksPerSM,
+            kernel,
+            blocksize, 
+            smembytes
+        ));
+
+        const int numBlocks = numSMs * maxBlocksPerSM;
+        
+        // std::cout << "numSegments "  << numSegments << ", num blocks " << numBlocks << "\n";
+    
+        #ifdef WITH_TIMING
+        helpers::GpuTimer timer1("maskingsinglethread::singleTileStagedAsyncCopyKernel<" + std::to_string(blocksize) + "," + std::to_string(maxSegmentLength) + ">");
+        #endif
+        kernel<<<numBlocks, blocksize, smembytes, stream>>>(
+            d_outputData,
+            d_lengths,
+            d_offsets,
+            d_inputData,
+            numSegments,
+            maskingThreshold,
+            maskingLetter,
+            applyExtraPaddingLetter,
+            paddingLetter,
+            inputTransformOp
+        );
+        #ifdef WITH_TIMING
+        timer1.print();
+        #endif
+    }
+#endif // defined(__CUDACC__)
+
+}
+
+
+
+namespace maskingsinglegroup{
+
+    template<class InputOffsetIterator>
+    __global__
+    void applyPaddingLetterKernel(
+        char* __restrict__ d_data,
+        const int* __restrict__ d_inputLengths,
+        InputOffsetIterator d_inputOffsets,
+        int numSegments,
+        char paddingLetter,
+        int padTo
+    ){
+        const int tid = threadIdx.x + blockIdx.x * blockDim.x;
+        const int segmentId = tid / padTo;
+        const int tidInSegment = tid % padTo;
+
+        if(segmentId < numSegments){
+
+            const size_t segmentBeginOffset = d_inputOffsets[segmentId];
+            const int segmentLength = d_inputLengths[segmentId];
+            const int numPaddingBytes = (segmentLength % padTo == 0) ? 0 : padTo - (segmentLength % padTo);
+            if(tidInSegment < numPaddingBytes){
+                d_data[segmentBeginOffset + segmentLength + tidInSegment] = paddingLetter;
+            }
+        }
+    }
+
+
+    template<int numGroupsInBlock, int maxUintsPerSequence, int maxMaskingHaloUints>
+    struct SingleTileWithPlainFlagsKernel1Smem{
+        // uint32_t elements[numGroupsInBlock][maxMaskingHaloUints + maxUintsPerSequence + maxMaskingHaloUints];
+        uint32_t byteFlags[numGroupsInBlock][maxMaskingHaloUints + maxUintsPerSequence + maxMaskingHaloUints];
+    };
+    
+    template<int blocksize, int groupsize, int maxMaskingThreshold, int maxSegmentLength, class InputOffsetIterator, class InputTransformOp>
+    __global__
+    void singleTileWithPlainFlagsKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp
+    ){
+        __builtin_assume(blockDim.x == blocksize);
+        static_assert(maxSegmentLength % 4 == 0);
+        
+        // static_assert(groupsize == 32);
+        auto block = cooperative_groups::this_thread_block();
+        auto warp = cooperative_groups::tiled_partition<32>(block);
+        auto group = cooperative_groups::tiled_partition<groupsize>(block);
+        
+        // constexpr int numWarpsInBlock = blocksize / 32;
+        // const int numWarpsInGrid = numWarpsInBlock * gridDim.x;
+        // const int warpIdInBlock = warp.meta_group_rank();
+        // const int warpIdInGrid = (threadIdx.x + blockIdx.x * blockDim.x) / 32;
+
+        constexpr int numGroupsInBlock = blocksize / groupsize;
+        const int numGroupsInGrid = numGroupsInBlock * gridDim.x;
+        const int groupIdInBlock = group.meta_group_rank();
+        const int groupIdInGrid = (threadIdx.x + blockIdx.x * blockDim.x) / groupsize;
+        
+        constexpr int maxUintsPerSegment = maxSegmentLength / 4;
+        constexpr int maxUintsPerThread = cuda::ceil_div(maxUintsPerSegment, groupsize);
+        constexpr int maxMaskingHaloUints = cuda::ceil_div(maxMaskingThreshold, 4);
+
+
+        const int maskingHaloUints = cuda::ceil_div(maskingThreshold, 4);
+        __builtin_assume(maskingThreshold <= maxMaskingThreshold);
+        __builtin_assume(maskingHaloUints <= maxMaskingHaloUints);
+    
+        using Smem = SingleTileWithPlainFlagsKernel1Smem<numGroupsInBlock, maxUintsPerSegment, maxMaskingHaloUints>;
+        extern __shared__ char externsmem[];
+        Smem& smem = *((Smem*)externsmem);
+
+        auto applyInputTransform = [&](uint32_t data){
+            alignas(4) char elements[4];
+            memcpy(&elements[0], &data, 4);
+            for(int i = 0; i < 4; i++){
+                elements[i] = inputTransformOp(elements[i]);
+            }
+            memcpy(&data, &elements[0], 4);
+            return data;
+        };
+    
+
+    
+        // if(threadIdx.x + blockIdx.x == 0){
+        //     printf("numSegments %d\n", numSegments);
+        // }
+    
+        //each group processes 1 sequence
+
+        for(int segmentId = groupIdInGrid; segmentId < numSegments; segmentId += numGroupsInGrid){
+            const int segmentLength = d_lengths[segmentId];
+            const size_t segmentOffset = d_offsets[segmentId];
+            const int segmentUints = cuda::ceil_div(segmentLength, 4);
+            const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+            uint32_t* const segmentOutputPtr = (uint32_t*)(d_outputData + segmentOffset);
+            __builtin_assume(segmentLength <= maxSegmentLength);
+            __builtin_assume(segmentUints <= maxUintsPerSegment);
+
+            uint32_t myTmpElements[maxUintsPerThread];
+            for(int i = 0; i < maxUintsPerThread; i++){
+                const int index = i * group.num_threads() + group.thread_rank();
+                if(index < segmentUints){
+                    myTmpElements[i] = segmentPtr[index];
+                }
+            }
+            for(int i = 0; i < maxUintsPerThread; i++){
+                const int index = i * group.num_threads() + group.thread_rank();
+                myTmpElements[i] = applyInputTransform(myTmpElements[i]);
+
+                const int threadIdOfLeftNeighborElements = group.thread_rank() > 0 ? group.thread_rank() - 1 : group.num_threads() - 1;
+                uint32_t shflelem = myTmpElements[i];
+                if(i > 0 && group.thread_rank() == group.num_threads() - 1){
+                    shflelem = myTmpElements[i-1];
+                }
+                uint32_t neighborElements = group.shfl(shflelem, threadIdOfLeftNeighborElements);
+                if(i == 0 && group.thread_rank() == 0){
+                    neighborElements = 0;
+                }
+
+                alignas(4) char charElements[8];
+                memcpy(&charElements[0], &neighborElements, 4);
+                memcpy(&charElements[4], &myTmpElements[i], 4);
+
+                alignas(4) char currentflags[4];
+                for(int k = 4; k < 8; k++){
+                    currentflags[k-4] = (charElements[k-1] != charElements[k]);
+                }
+                uint32_t flagsvec;
+                memcpy(&flagsvec, &currentflags[0], 4);
+
+                if(index < segmentUints){
+                    smem.byteFlags[groupIdInBlock][maxMaskingHaloUints+index] = flagsvec;
+                }
+            }
+
+            //if(isFirstChunk)
+            if(group.thread_rank() == 0){
+                //mark begin of whole segment
+                ((char*)&smem.byteFlags[groupIdInBlock][maxMaskingHaloUints])[0] = 1; 
+            }
+            //if(isLastChunk)
+            if(group.thread_rank() == segmentUints % group.num_threads()){
+                //mark first oob element
+                ((char*)&smem.byteFlags[groupIdInBlock][maxMaskingHaloUints])[segmentLength] = 1; 
+                
+            }
+            group.sync();
+
+            //counting
+            for(int x = 0; x < maxUintsPerThread; x++){
+                const int index = x * group.num_threads() + group.thread_rank();
+                
+                alignas(4) char charflagarray[4*(maxMaskingHaloUints + 1 + maxMaskingHaloUints)];
+                for(int i = 0; i < (maxMaskingHaloUints + 1 + maxMaskingHaloUints); i++){
+                    uint32_t tmp = 0x01010101;
+                    memcpy(&charflagarray[4*i], &tmp, 4);
+                }
+
+                if(index < segmentUints){
+                    uint32_t center = smem.byteFlags[groupIdInBlock][maxMaskingHaloUints + index];
+                    memcpy(&charflagarray[4*maxMaskingHaloUints], &center, 4);
+
+                    #pragma unroll
+                    for(int i = 0; i < maxMaskingHaloUints; i++){
+                        if(i < maskingHaloUints){
+                            uint32_t l = smem.byteFlags[groupIdInBlock][maxMaskingHaloUints + index-1-i];
+                            uint32_t r = smem.byteFlags[groupIdInBlock][maxMaskingHaloUints + index+1+i];
+                            memcpy(&charflagarray[4*(maxMaskingHaloUints-1-i)], &l, 4);
+                            memcpy(&charflagarray[4*(maxMaskingHaloUints+1+i)], &r, 4);
+
+                            // left4[maxMaskingHaloUints-1-i] = smem.byteFlags[groupIdInBlock][maxMaskingHaloUints + index-1-i];
+                            // right4[i] = smem.byteFlags[groupIdInBlock][maxMaskingHaloUints + index+1+i];
+                        }
+                    }
+                }
+                
+                int counts[4];
+
+                //for first element, count left
+                counts[0] = 0;
+                for(int i = 0; i < maxMaskingThreshold; i++){
+                    counts[0]++;
+                    if(charflagarray[4*maxMaskingHaloUints - i] == 1){
                         break;
                     }
                 }
+                //for first element, count right
+                for(int i = 0; i < maxMaskingThreshold-1; i++){
+                    if(charflagarray[4*maxMaskingHaloUints + 1 + i] == 1){
+                        break;
+                    }
+                    counts[0]++;
+                }
+                for(int k = 1; k < 4; k++){
+                    if(charflagarray[4*maxMaskingHaloUints+k] == 0){
+                        counts[k] = counts[k-1]; //same segment, same masking criterion
+                    }else{
+                        //new segment begins at k, count to the right
+                        counts[k] = 1;
+                        for(int i = 0; i < maxMaskingThreshold-1; i++){
+                            if(charflagarray[4*maxMaskingHaloUints + 1 + k + i] == 1){
+                                break;
+                            }
+                            counts[k]++;
+                        }
+                    }
+                }
+                
+                alignas(4) char charElements[4];
+                memcpy(&charElements[0], &myTmpElements[x], 4);
+                for(int k = 0; k < 4; k++){
+                    if(counts[k] >= maskingThreshold){
+                        charElements[k] = maskingLetter;
+                    }
+                }
+                if(applyExtraPaddingLetter){
+                    if(index == segmentUints-1){
+                        for(int k = 0; k < 4; k++){
+                            if(index * 4 + k >= segmentLength){
+                                charElements[k] = paddingLetter;
+                            }
+                        }
+                    }
+                }
+                memcpy(&myTmpElements[x], &charElements[0], 4);
 
-                // if(warp.thread_rank() == 0){
-                //     if(segmentId == 0){
-                //         printf("write to gmem pos %d, count %d\n", outputChunkBegin + outputElementLocalIndex, count);
+                if(index < segmentUints){
+                    segmentOutputPtr[index] = myTmpElements[x];
+                }
+            }
+            group.sync();
+
+        }
+    }
+    
+    
+    template<int blocksize, int groupsize, int maxMaskingThreshold, int maxSegmentLength, class InputOffsetIterator, class InputTransformOp>
+    void callSingleTileWithPlainFlagsKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp,
+        cudaStream_t stream
+    ){
+        if(maskingThreshold > maxMaskingThreshold){
+            throw std::runtime_error("maskingThreshold > maxMaskingThreshold");
+        }
+        int deviceId;
+        int numSMs;
+        CUDACHECK(cudaGetDevice(&deviceId));
+        CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
+    
+        int maxBlocksPerSM = 0;
+    
+        constexpr int maxUintsPerSegment = maxSegmentLength / 4;
+        constexpr int maxMaskingHaloUints = cuda::ceil_div(maxMaskingThreshold, 4);
+        constexpr int numGroupsInBlock = blocksize / groupsize;
+        auto kernel = singleTileWithPlainFlagsKernel<blocksize, groupsize, maxMaskingThreshold, 
+            maxSegmentLength, InputOffsetIterator, InputTransformOp>;
+        using SmemType = SingleTileWithPlainFlagsKernel1Smem<numGroupsInBlock, maxUintsPerSegment, maxMaskingHaloUints>;
+    
+        int smembytes = sizeof(SmemType);
+    
+        if(smembytes > 48*1024){
+            cudaError_t status = cudaFuncSetAttribute(reinterpret_cast<const void*>(kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, smembytes);
+            if(status != cudaSuccess){
+                cudaGetLastError();
+                throw std::runtime_error("Unable to set cudaFuncAttributeMaxDynamicSharedMemorySize to " + std::to_string(smembytes));
+            }
+        }
+    
+        CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &maxBlocksPerSM,
+            kernel,
+            blocksize, 
+            smembytes
+        ));
+        
+        const int numBlocks = numSMs * maxBlocksPerSM;
+        
+        // std::cout << "numSegments "  << numSegments << ", num blocks " << numBlocks << "\n";
+
+        #ifdef WITH_TIMING
+        std::string timername = "maskingsinglegroup::singleTileWithPlainFlagsKernel<";
+        timername += std::to_string(blocksize) + ",";
+        timername += std::to_string(groupsize) + ",";
+        timername += std::to_string(maxMaskingThreshold) + ",";
+        timername += std::to_string(maxSegmentLength) + ">";
+        helpers::GpuTimer timer1(timername);
+        #endif
+        kernel<<<numBlocks, blocksize, smembytes, stream>>>(
+            d_outputData,
+            d_lengths,
+            d_offsets,
+            d_inputData,
+            numSegments,
+            maskingThreshold,
+            maskingLetter,
+            applyExtraPaddingLetter,
+            paddingLetter,
+            inputTransformOp
+        );
+        #ifdef WITH_TIMING
+        timer1.print();
+        #endif
+
+    }
+
+
+
+
+
+
+
+
+    template<int numGroupsInBlock, int maxUintsPerTile, int maxMaskingHaloUints>
+    struct MultiTileWithPlainFlagsKernel1Smem{
+        // uint32_t elements[numGroupsInBlock][maxMaskingHaloUints + maxUintsPerTile + maxMaskingHaloUints];
+        uint32_t byteFlags[numGroupsInBlock][maxMaskingHaloUints + maxUintsPerTile + maxMaskingHaloUints];
+    };
+    
+    template<int blocksize, int groupsize, int maxMaskingThreshold, int maxTilesize, class InputOffsetIterator, class InputTransformOp>
+    __global__
+    void multiTileWithPlainFlagsKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp
+    ){
+        __builtin_assume(blockDim.x == blocksize);
+        static_assert(maxTilesize % 4 == 0);
+        
+        // static_assert(groupsize == 32);
+        auto block = cooperative_groups::this_thread_block();
+        auto warp = cooperative_groups::tiled_partition<32>(block);
+        auto group = cooperative_groups::tiled_partition<groupsize>(block);
+        
+        // constexpr int numWarpsInBlock = blocksize / 32;
+        // const int numWarpsInGrid = numWarpsInBlock * gridDim.x;
+        // const int warpIdInBlock = warp.meta_group_rank();
+        // const int warpIdInGrid = (threadIdx.x + blockIdx.x * blockDim.x) / 32;
+
+        constexpr int numGroupsInBlock = blocksize / groupsize;
+        const int numGroupsInGrid = numGroupsInBlock * gridDim.x;
+        const int groupIdInBlock = group.meta_group_rank();
+        const int groupIdInGrid = (threadIdx.x + blockIdx.x * blockDim.x) / groupsize;
+        
+        constexpr int maxUintsPerTile = maxTilesize / 4;
+        constexpr int maxMaskingHaloUints = cuda::ceil_div(maxMaskingThreshold, 4);
+        constexpr int maxUintsPerThread = cuda::ceil_div(maxUintsPerTile+maxMaskingHaloUints, groupsize);
+
+        const int maskingHaloUints = cuda::ceil_div(maskingThreshold, 4);
+        __builtin_assume(maskingThreshold <= maxMaskingThreshold);
+        __builtin_assume(maskingHaloUints <= maxMaskingHaloUints);
+    
+        using Smem = MultiTileWithPlainFlagsKernel1Smem<numGroupsInBlock, maxUintsPerTile, maxMaskingHaloUints>;
+        extern __shared__ char externsmem[];
+        Smem& smem = *((Smem*)externsmem);
+
+        auto applyInputTransform = [&](uint32_t data){
+            alignas(4) char elements[4];
+            memcpy(&elements[0], &data, 4);
+            for(int i = 0; i < 4; i++){
+                elements[i] = inputTransformOp(elements[i]);
+            }
+            memcpy(&data, &elements[0], 4);
+            return data;
+        };
+    
+        // if(threadIdx.x + blockIdx.x == 0){
+        //     printf("numSegments %d\n", numSegments);
+        // }
+    
+        //each group processes 1 sequence
+
+        for(int segmentId = groupIdInGrid; segmentId < numSegments; segmentId += numGroupsInGrid){
+            const int segmentLength = d_lengths[segmentId];
+            const size_t segmentOffset = d_offsets[segmentId];
+            const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+            uint32_t* const segmentOutputPtr = (uint32_t*)(d_outputData + segmentOffset);
+            const int segmentUints = cuda::ceil_div(segmentLength, 4);
+            
+            const int numTiles = cuda::ceil_div(segmentUints, maxUintsPerTile);
+
+            for(int tileNr = 0; tileNr < numTiles; tileNr++){
+                const bool isFirstTile = tileNr == 0;
+                const bool isLastTile = tileNr == numTiles-1;
+
+                const int tileBegin = tileNr * maxUintsPerTile;
+                const int tileEnd = cuda::std::min(segmentUints, tileBegin + maxUintsPerTile);
+                const int tileUints = tileEnd - tileBegin;
+                // const int tileSize = tileEnd - tileBegin;
+                
+                //const int tileLoadBegin = isFirstTile ? tileBegin : tileBegin - maskingHaloUints;
+                const int tileLoadBegin = tileBegin - maskingHaloUints;
+                const int tileLoadEnd = (!isLastTile) ? tileEnd + maskingHaloUints : tileEnd;
+                const int tileWithHaloUints = tileLoadEnd - tileLoadBegin;
+
+
+                uint32_t myTmpElements[maxUintsPerThread];
+                for(int i = 0; i < maxUintsPerThread; i++){
+                    const int index = i * group.num_threads() + group.thread_rank();
+                    if(index < tileWithHaloUints){
+                        if(tileBegin - maskingHaloUints + index >= 0){
+                            myTmpElements[i] = segmentPtr[tileBegin - maskingHaloUints + index];
+                            // printf("thread %d, i %d, load from gmem %d\n", group.thread_rank(), i, tileBegin - maskingHaloUints + index);
+                        }
+                    }
+                }
+
+                // if(group.thread_rank() == 0){
+                //     for(int i = 0; i < segmentLength + maxMaskingThreshold; i++){
+                //         ((char*)&smem.byteFlags[groupIdInBlock][0])[i] = 42;
+                //     }
+                // }
+                // group.sync();
+                // if(group.thread_rank() == 0){
+                //     printf("flags\n");
+                //     for(int i = 0; i < segmentLength + maxMaskingThreshold; i++){
+                //         printf("%d ", ((char*)&smem.byteFlags[groupIdInBlock][0])[i]);
+                //     }
+                //     printf("\n");
+                // }
+                // group.sync();
+
+                for(int i = 0; i < maxUintsPerThread; i++){
+                    const int index = i * group.num_threads() + group.thread_rank();
+                    myTmpElements[i] = applyInputTransform(myTmpElements[i]);
+
+                    const int threadIdOfLeftNeighborElements = group.thread_rank() > 0 ? group.thread_rank() - 1 : group.num_threads() - 1;
+                    uint32_t shflelem = myTmpElements[i];
+                    if(i > 0 && group.thread_rank() == group.num_threads() - 1){
+                        shflelem = myTmpElements[i-1];
+                    }
+                    uint32_t neighborElements = group.shfl(shflelem, threadIdOfLeftNeighborElements);
+                    if(i == 0 && group.thread_rank() == 0){
+                        neighborElements = 0;
+                    }
+
+                    alignas(4) char charElements[8];
+                    memcpy(&charElements[0], &neighborElements, 4);
+                    memcpy(&charElements[4], &myTmpElements[i], 4);
+
+                    alignas(4) char currentflags[4];
+                    for(int k = 4; k < 8; k++){
+                        currentflags[k-4] = (charElements[k-1] != charElements[k]);
+                    }
+                    uint32_t flagsvec;
+                    memcpy(&flagsvec, &currentflags[0], 4);
+
+                    if(index < tileWithHaloUints){
+                        smem.byteFlags[groupIdInBlock][index] = flagsvec;
+                    }
+                }
+
+                if(isFirstTile){
+                    if(group.thread_rank() == 0){
+                        //mark begin of whole segment
+                        ((char*)&smem.byteFlags[groupIdInBlock][maskingHaloUints])[0] = 1; 
+                    }
+                }
+                if(isLastTile){
+                    const int segmentLengthInLastTile = segmentLength - tileNr * maxTilesize;
+                    if(group.thread_rank() == ((maskingHaloUints + tileUints) % group.num_threads())){
+                        //mark first oob element
+                        ((char*)&smem.byteFlags[groupIdInBlock][maskingHaloUints])[segmentLengthInLastTile] = 1;                         
+                    }
+                }
+                group.sync();
+
+
+                //counting
+                for(int x = 0; x < maxUintsPerThread; x++){
+                    const int index = x * group.num_threads() + group.thread_rank();
+                    
+                    alignas(4) char charflagarray[4*(maxMaskingHaloUints + 1 + maxMaskingHaloUints)];
+                    for(int i = 0; i < (maxMaskingHaloUints + 1 + maxMaskingHaloUints); i++){
+                        uint32_t tmp = 0x01010101;
+                        memcpy(&charflagarray[4*i], &tmp, 4);
+                    }
+
+                    if(maskingHaloUints <= index && index < maskingHaloUints + tileUints){
+                        uint32_t center = smem.byteFlags[groupIdInBlock][index];
+                        memcpy(&charflagarray[4*maxMaskingHaloUints], &center, 4);
+
+                        #pragma unroll
+                        for(int i = 0; i < maxMaskingHaloUints; i++){
+                            if(i < maskingHaloUints){
+                                uint32_t l = smem.byteFlags[groupIdInBlock][index-1-i];
+                                uint32_t r = smem.byteFlags[groupIdInBlock][index+1+i];
+                                memcpy(&charflagarray[4*(maxMaskingHaloUints-1-i)], &l, 4);
+                                memcpy(&charflagarray[4*(maxMaskingHaloUints+1+i)], &r, 4);
+
+                                // left4[maxMaskingHaloUints-1-i] = smem.byteFlags[groupIdInBlock][maxMaskingHaloUints + index-1-i];
+                                // right4[i] = smem.byteFlags[groupIdInBlock][maxMaskingHaloUints + index+1+i];
+                            }
+                        }
+                    }
+                    
+                    int counts[4];
+
+                    //for first element, count left
+                    counts[0] = 0;
+                    for(int i = 0; i < maxMaskingThreshold; i++){
+                        counts[0]++;
+                        if(charflagarray[4*maxMaskingHaloUints - i] == 1){
+                            break;
+                        }
+                    }
+                    //for first element, count right
+                    for(int i = 0; i < maxMaskingThreshold-1; i++){
+                        if(charflagarray[4*maxMaskingHaloUints + 1 + i] == 1){
+                            break;
+                        }
+                        counts[0]++;
+                    }
+                    for(int k = 1; k < 4; k++){
+                        if(charflagarray[4*maxMaskingHaloUints+k] == 0){
+                            counts[k] = counts[k-1]; //same segment, same masking criterion
+                        }else{
+                            //new segment begins at k, count to the right
+                            counts[k] = 1;
+                            for(int i = 0; i < maxMaskingThreshold-1; i++){
+                                if(charflagarray[4*maxMaskingHaloUints + 1 + k + i] == 1){
+                                    break;
+                                }
+                                counts[k]++;
+                            }
+                        }
+                    }
+                    
+                    alignas(4) char charElements[4];
+                    memcpy(&charElements[0], &myTmpElements[x], 4);
+                    for(int k = 0; k < 4; k++){
+                        if(counts[k] >= maskingThreshold){
+                            charElements[k] = maskingLetter;
+                        }
+                    }
+                    if(applyExtraPaddingLetter){
+                        if((index-maskingHaloUints) == tileUints-1){
+                            for(int k = 0; k < 4; k++){
+                                if((tileBegin + (index-maskingHaloUints)) * 4 + k >= segmentLength){
+                                    charElements[k] = paddingLetter;
+                                }
+                            }
+                        }
+                    }
+                    memcpy(&myTmpElements[x], &charElements[0], 4);
+
+                    if(maskingHaloUints <= index && index < maskingHaloUints + tileUints){
+                        segmentOutputPtr[tileBegin - maskingHaloUints + index] = myTmpElements[x];
+                        // printf("thread %d, i %d, write to gmem %d, tileUints %d, maxUintsPerThread %d, tileWithHaloUints %d\n", 
+                        //     group.thread_rank(), x, tileBegin - maskingHaloUints + index, tileUints, maxUintsPerThread, tileWithHaloUints);
+                    }
+                }
+                group.sync();
+            }
+        }
+
+    }
+    
+    
+    template<int blocksize, int groupsize, int maxMaskingThreshold, int maxTilesize, class InputOffsetIterator, class InputTransformOp>
+    void callMultiTileWithPlainFlagsKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp,
+        cudaStream_t stream
+    ){
+        if(maskingThreshold > maxMaskingThreshold){
+            throw std::runtime_error("maskingThreshold > maxMaskingThreshold");
+        }
+        int deviceId;
+        int numSMs;
+        CUDACHECK(cudaGetDevice(&deviceId));
+        CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
+    
+        int maxBlocksPerSM = 0;
+    
+        constexpr int maxUintsPerTile = maxTilesize / 4;
+        constexpr int maxMaskingHaloUints = cuda::ceil_div(maxMaskingThreshold, 4);
+        constexpr int numGroupsInBlock = blocksize / groupsize;
+        auto kernel = multiTileWithPlainFlagsKernel<blocksize, groupsize, maxMaskingThreshold, 
+                maxTilesize, InputOffsetIterator, InputTransformOp>;
+        using SmemType = MultiTileWithPlainFlagsKernel1Smem<numGroupsInBlock, maxUintsPerTile, maxMaskingHaloUints>;
+    
+        int smembytes = sizeof(SmemType);
+    
+        if(smembytes > 48*1024){
+            cudaError_t status = cudaFuncSetAttribute(reinterpret_cast<const void*>(kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, smembytes);
+            if(status != cudaSuccess){
+                cudaGetLastError();
+                throw std::runtime_error("Unable to set cudaFuncAttributeMaxDynamicSharedMemorySize to " + std::to_string(smembytes));
+            }
+        }
+    
+        CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &maxBlocksPerSM,
+            kernel,
+            blocksize, 
+            smembytes
+        ));
+        
+        const int numBlocks = numSMs * maxBlocksPerSM;
+        
+        // std::cout << "numSegments "  << numSegments << ", num blocks " << numBlocks << "\n";
+
+        #ifdef WITH_TIMING
+        std::string timername = "maskingsinglegroup::multiTileWithPlainFlagsKernel<";
+        timername += std::to_string(blocksize) + ",";
+        timername += std::to_string(groupsize) + ",";
+        timername += std::to_string(maxMaskingThreshold) + ",";
+        timername += std::to_string(maxTilesize) + ">";
+        helpers::GpuTimer timer1(timername);
+        #endif
+        kernel<<<numBlocks, blocksize, smembytes, stream>>>(
+            d_outputData,
+            d_lengths,
+            d_offsets,
+            d_inputData,
+            numSegments,
+            maskingThreshold,
+            maskingLetter,
+            applyExtraPaddingLetter,
+            paddingLetter,
+            inputTransformOp
+        );
+        #ifdef WITH_TIMING
+        timer1.print();
+        #endif
+
+    }
+
+}
+
+
+
+
+namespace maskingsingleblock{
+
+    template<class InputOffsetIterator>
+    __global__
+    void applyPaddingLetterKernel(
+        char* __restrict__ d_data,
+        const int* __restrict__ d_inputLengths,
+        InputOffsetIterator d_inputOffsets,
+        int numSegments,
+        char paddingLetter,
+        int padTo
+    ){
+        const int tid = threadIdx.x + blockIdx.x * blockDim.x;
+        const int segmentId = tid / padTo;
+        const int tidInSegment = tid % padTo;
+
+        if(segmentId < numSegments){
+
+            const size_t segmentBeginOffset = d_inputOffsets[segmentId];
+            const int segmentLength = d_inputLengths[segmentId];
+            const int numPaddingBytes = (segmentLength % padTo == 0) ? 0 : padTo - (segmentLength % padTo);
+            if(tidInSegment < numPaddingBytes){
+                d_data[segmentBeginOffset + segmentLength + tidInSegment] = paddingLetter;
+            }
+        }
+    }
+
+
+    template<int blocksize, int maxUintsPerSequence, int maxMaskingHaloUints>
+    struct SingleTileWithPlainFlagsKernel1Smem{
+        uint32_t communication_elements[blocksize];
+        uint32_t byteFlags[maxMaskingHaloUints + maxUintsPerSequence + maxMaskingHaloUints];
+    };
+    
+    template<int blocksize, int maxMaskingThreshold, int maxSegmentLength, class InputOffsetIterator, class InputTransformOp>
+    __global__
+    void singleTileWithPlainFlagsKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp
+    ){
+        __builtin_assume(blockDim.x == blocksize);
+        __builtin_assume(blockDim.y == 1);
+        __builtin_assume(blockDim.z == 1);
+        static_assert(maxSegmentLength % 4 == 0);
+        
+        auto block = cooperative_groups::this_thread_block();
+        
+        constexpr int maxUintsPerSegment = maxSegmentLength / 4;
+        constexpr int maxUintsPerThread = cuda::ceil_div(maxUintsPerSegment, blocksize);
+        constexpr int maxMaskingHaloUints = cuda::ceil_div(maxMaskingThreshold, 4);
+
+
+        const int maskingHaloUints = cuda::ceil_div(maskingThreshold, 4);
+        __builtin_assume(maskingThreshold <= maxMaskingThreshold);
+        __builtin_assume(maskingHaloUints <= maxMaskingHaloUints);
+    
+        using Smem = SingleTileWithPlainFlagsKernel1Smem<blocksize, maxUintsPerSegment, maxMaskingHaloUints>;
+        extern __shared__ char externsmem[];
+        Smem& smem = *((Smem*)externsmem);
+
+        auto applyInputTransform = [&](uint32_t data){
+            alignas(4) char elements[4];
+            memcpy(&elements[0], &data, 4);
+            for(int i = 0; i < 4; i++){
+                elements[i] = inputTransformOp(elements[i]);
+            }
+            memcpy(&data, &elements[0], 4);
+            return data;
+        };
+
+    
+        // if(threadIdx.x + blockIdx.x == 0){
+        //     printf("numSegments %d\n", numSegments);
+        // }
+    
+        //each group processes 1 sequence
+
+        for(int segmentId = blockIdx.x; segmentId < numSegments; segmentId += gridDim.x){
+            const int segmentLength = d_lengths[segmentId];
+            const size_t segmentOffset = d_offsets[segmentId];
+            const int segmentUints = cuda::ceil_div(segmentLength, 4);
+            const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+            uint32_t* const segmentOutputPtr = (uint32_t*)(d_outputData + segmentOffset);
+            __builtin_assume(segmentLength <= maxSegmentLength);
+            __builtin_assume(segmentUints <= maxUintsPerSegment);
+
+            uint32_t myTmpElements[maxUintsPerThread];
+            for(int i = 0; i < maxUintsPerThread; i++){
+                const int index = i * block.num_threads() + block.thread_rank();
+                if(index < segmentUints){
+                    myTmpElements[i] = segmentPtr[index];
+                }
+            }
+            for(int i = 0; i < maxUintsPerThread; i++){
+                const int index = i * block.num_threads() + block.thread_rank();
+                myTmpElements[i] = applyInputTransform(myTmpElements[i]);
+
+                const int threadIdOfLeftNeighborElements = block.thread_rank() > 0 ? block.thread_rank() - 1 : block.num_threads() - 1;
+                uint32_t shflelem = myTmpElements[i];
+                if(i > 0 && block.thread_rank() == block.num_threads() - 1){
+                    shflelem = myTmpElements[i-1];
+                }
+                smem.communication_elements[block.thread_rank()] = shflelem;
+                block.sync();
+                uint32_t neighborElements = smem.communication_elements[threadIdOfLeftNeighborElements];
+                block.sync();
+                if(i == 0 && block.thread_rank() == 0){
+                    neighborElements = 0;
+                }
+
+                alignas(4) char charElements[8];
+                memcpy(&charElements[0], &neighborElements, 4);
+                memcpy(&charElements[4], &myTmpElements[i], 4);
+
+                // if(segmentId == 41){
+                //     if(index >= 191 && index <= 194){
+                //         printf("index %d, %d %d %d %d %d %d %d %d\n",
+                //             index, 
+                //             charElements[0], charElements[1], charElements[2], charElements[3],
+                //             charElements[4], charElements[5], charElements[6], charElements[7]
+                //         );
                 //     }
                 // }
 
-                const char outputLetter = (count >= maskingThreshold) ? maskingLetter : myLetter;
-                segmentOutputData[outputChunkBegin + outputElementLocalIndex] = outputLetter;
+                alignas(4) char currentflags[4];
+                for(int k = 4; k < 8; k++){
+                    currentflags[k-4] = (charElements[k-1] != charElements[k]);
+                }
+                uint32_t flagsvec;
+                memcpy(&flagsvec, &currentflags[0], 4);
+
+                if(index < segmentUints){
+                    smem.byteFlags[maxMaskingHaloUints+index] = flagsvec;
+                }
             }
+
+            //if(isFirstChunk)
+            if(block.thread_rank() == 0){
+                //mark begin of whole segment
+                ((char*)&smem.byteFlags[maxMaskingHaloUints])[0] = 1; 
+            }
+            //if(isLastChunk)
+            if(block.thread_rank() == segmentUints % block.num_threads()){
+                //mark first oob element
+                ((char*)&smem.byteFlags[maxMaskingHaloUints])[segmentLength] = 1; 
+                
+            }
+            block.sync();
+
+            //counting
+            for(int x = 0; x < maxUintsPerThread; x++){
+                const int index = x * block.num_threads() + block.thread_rank();
+                
+                alignas(4) char charflagarray[4*(maxMaskingHaloUints + 1 + maxMaskingHaloUints)];
+                for(int i = 0; i < (maxMaskingHaloUints + 1 + maxMaskingHaloUints); i++){
+                    uint32_t tmp = 0x01010101;
+                    memcpy(&charflagarray[4*i], &tmp, 4);
+                }
+
+                if(index < segmentUints){
+                    uint32_t center = smem.byteFlags[maxMaskingHaloUints + index];
+                    memcpy(&charflagarray[4*maxMaskingHaloUints], &center, 4);
+
+                    #pragma unroll
+                    for(int i = 0; i < maxMaskingHaloUints; i++){
+                        if(i < maskingHaloUints){
+                            uint32_t l = smem.byteFlags[maxMaskingHaloUints + index-1-i];
+                            uint32_t r = smem.byteFlags[maxMaskingHaloUints + index+1+i];
+                            memcpy(&charflagarray[4*(maxMaskingHaloUints-1-i)], &l, 4);
+                            memcpy(&charflagarray[4*(maxMaskingHaloUints+1+i)], &r, 4);
+
+                            // left4[maxMaskingHaloUints-1-i] = smem.byteFlags[maxMaskingHaloUints + index-1-i];
+                            // right4[i] = smem.byteFlags[maxMaskingHaloUints + index+1+i];
+                        }
+                    }
+                }
+                
+                int counts[4];
+
+                //for first element, count left
+                counts[0] = 0;
+                for(int i = 0; i < maxMaskingThreshold; i++){
+                    counts[0]++;
+                    if(charflagarray[4*maxMaskingHaloUints - i] == 1){
+                        break;
+                    }
+                }
+                //for first element, count right
+                for(int i = 0; i < maxMaskingThreshold-1; i++){
+                    if(charflagarray[4*maxMaskingHaloUints + 1 + i] == 1){
+                        break;
+                    }
+                    counts[0]++;
+                }
+                for(int k = 1; k < 4; k++){
+                    if(charflagarray[4*maxMaskingHaloUints+k] == 0){
+                        counts[k] = counts[k-1]; //same segment, same masking criterion
+                    }else{
+                        //new segment begins at k, count to the right
+                        counts[k] = 1;
+                        for(int i = 0; i < maxMaskingThreshold-1; i++){
+                            if(charflagarray[4*maxMaskingHaloUints + 1 + k + i] == 1){
+                                break;
+                            }
+                            counts[k]++;
+                        }
+                    }
+                }
+                
+                alignas(4) char charElements[4];
+                memcpy(&charElements[0], &myTmpElements[x], 4);
+                for(int k = 0; k < 4; k++){
+                    if(counts[k] >= maskingThreshold){
+                        charElements[k] = maskingLetter;
+                    }
+                }
+                if(applyExtraPaddingLetter){
+                    if((index) == segmentUints-1){
+                        for(int k = 0; k < 4; k++){
+                            if(((index)) * 4 + k >= segmentLength){
+                                charElements[k] = paddingLetter;
+                            }
+                        }
+                    }
+                }
+                memcpy(&myTmpElements[x], &charElements[0], 4);
+
+                if(index < segmentUints){
+                    segmentOutputPtr[index] = myTmpElements[x];
+                }
+            }
+            block.sync();
+
+        }
+    }
+    
+    
+    template<int blocksize, int maxMaskingThreshold, int maxSegmentLength, class InputOffsetIterator, class InputTransformOp>
+    void callSingleTileWithPlainFlagsKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp,
+        cudaStream_t stream
+    ){
+        if(maskingThreshold > maxMaskingThreshold){
+            throw std::runtime_error("maskingThreshold > maxMaskingThreshold");
+        }
+        int deviceId;
+        int numSMs;
+        CUDACHECK(cudaGetDevice(&deviceId));
+        CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
+    
+        int maxBlocksPerSM = 0;
+    
+        constexpr int maxUintsPerSegment = maxSegmentLength / 4;
+        constexpr int maxMaskingHaloUints = cuda::ceil_div(maxMaskingThreshold, 4);
+        auto kernel = singleTileWithPlainFlagsKernel<blocksize, maxMaskingThreshold, 
+            maxSegmentLength, InputOffsetIterator, InputTransformOp>;
+        using SmemType = SingleTileWithPlainFlagsKernel1Smem<blocksize, maxUintsPerSegment, maxMaskingHaloUints>;
+    
+        int smembytes = sizeof(SmemType);
+    
+        if(smembytes > 48*1024){
+            cudaError_t status = cudaFuncSetAttribute(reinterpret_cast<const void*>(kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, smembytes);
+            if(status != cudaSuccess){
+                cudaGetLastError();
+                throw std::runtime_error("Unable to set cudaFuncAttributeMaxDynamicSharedMemorySize to " + std::to_string(smembytes));
+            }
+        }
+    
+        CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &maxBlocksPerSM,
+            kernel,
+            blocksize, 
+            smembytes
+        ));
+        
+        const int numBlocks = numSMs * maxBlocksPerSM;
+        
+        // std::cout << "numSegments "  << numSegments << ", num blocks " << numBlocks << "\n";
+
+        #ifdef WITH_TIMING
+        std::string timername = "maskingsingleblock::multiTileWithPlainFlagsKernel<";
+        timername += std::to_string(blocksize) + ",";
+        timername += std::to_string(maxMaskingThreshold) + ",";
+        timername += std::to_string(maxSegmentLength) + ">";
+        helpers::GpuTimer timer1(timername);
+        #endif
+        kernel<<<numBlocks, blocksize, smembytes, stream>>>(
+            d_outputData,
+            d_lengths,
+            d_offsets,
+            d_inputData,
+            numSegments,
+            maskingThreshold,
+            maskingLetter,
+            applyExtraPaddingLetter,
+            paddingLetter,
+            inputTransformOp
+        );
+        #ifdef WITH_TIMING
+        timer1.print();
+        #endif
+
+    }
+
+
+
+
+
+
+    template<int blocksize, int maxUintsPerTile, int maxMaskingHaloUints>
+    struct MultiTileWithPlainFlagsKernel1Smem{
+        uint32_t communication_elements[blocksize];
+        uint32_t byteFlags[maxMaskingHaloUints + maxUintsPerTile + maxMaskingHaloUints];
+    };
+    
+    template<int blocksize, int maxMaskingThreshold, int maxTilesize, class InputOffsetIterator, class InputTransformOp>
+    __global__
+    void multiTileWithPlainFlagsKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp
+    ){
+        __builtin_assume(blockDim.x == blocksize);
+        __builtin_assume(blockDim.y == 1);
+        __builtin_assume(blockDim.z == 1);
+        static_assert(maxTilesize % 4 == 0);
+        
+        auto block = cooperative_groups::this_thread_block();
+
+        constexpr int maxUintsPerTile = maxTilesize / 4;
+        constexpr int maxMaskingHaloUints = cuda::ceil_div(maxMaskingThreshold, 4);
+        constexpr int maxUintsPerThread = cuda::ceil_div(maxUintsPerTile+maxMaskingHaloUints, blocksize);
+
+        const int maskingHaloUints = cuda::ceil_div(maskingThreshold, 4);
+        __builtin_assume(maskingThreshold <= maxMaskingThreshold);
+        __builtin_assume(maskingHaloUints <= maxMaskingHaloUints);
+    
+        using Smem = MultiTileWithPlainFlagsKernel1Smem<blocksize, maxUintsPerTile, maxMaskingHaloUints>;
+        extern __shared__ char externsmem[];
+        Smem& smem = *((Smem*)externsmem);
+
+        auto applyInputTransform = [&](uint32_t data){
+            alignas(4) char elements[4];
+            memcpy(&elements[0], &data, 4);
+            for(int i = 0; i < 4; i++){
+                elements[i] = inputTransformOp(elements[i]);
+            }
+            memcpy(&data, &elements[0], 4);
+            return data;
+        };
+    
+        // if(threadIdx.x + blockIdx.x == 0){
+        //     printf("numSegments %d\n", numSegments);
+        // }
+    
+        //each group processes 1 sequence
+
+        for(int segmentId = blockIdx.x; segmentId < numSegments; segmentId += gridDim.x){
+            const int segmentLength = d_lengths[segmentId];
+            const size_t segmentOffset = d_offsets[segmentId];
+            const uint32_t* const segmentPtr = (const uint32_t*)(d_inputData + segmentOffset);
+            uint32_t* const segmentOutputPtr = (uint32_t*)(d_outputData + segmentOffset);
+            const int segmentUints = cuda::ceil_div(segmentLength, 4);
             
-            warp.sync(); //done with shared memory of stage, can be reused for prefetching
-        }
-        //apply 4-byte padding
-        const int paddedLength = cuda::ceil_div(segmentSize, 4) * 4;
-        if(segmentSize + warp.thread_rank() < paddedLength){
-            segmentOutputData[segmentSize + warp.thread_rank()] = paddingLetter;
+            const int numTiles = cuda::ceil_div(segmentUints, maxUintsPerTile);
+
+            for(int tileNr = 0; tileNr < numTiles; tileNr++){
+                const bool isFirstTile = tileNr == 0;
+                const bool isLastTile = tileNr == numTiles-1;
+
+                const int tileBegin = tileNr * maxUintsPerTile;
+                const int tileEnd = cuda::std::min(segmentUints, tileBegin + maxUintsPerTile);
+                const int tileUints = tileEnd - tileBegin;
+                // const int tileSize = tileEnd - tileBegin;
+                
+                //const int tileLoadBegin = isFirstTile ? tileBegin : tileBegin - maskingHaloUints;
+                const int tileLoadBegin = tileBegin - maskingHaloUints;
+                const int tileLoadEnd = (!isLastTile) ? tileEnd + maskingHaloUints : tileEnd;
+                const int tileWithHaloUints = tileLoadEnd - tileLoadBegin;
+
+
+                uint32_t myTmpElements[maxUintsPerThread];
+                for(int i = 0; i < maxUintsPerThread; i++){
+                    const int index = i * block.num_threads() + block.thread_rank();
+                    if(index < tileWithHaloUints){
+                        if(tileBegin - maskingHaloUints + index >= 0){
+                            myTmpElements[i] = segmentPtr[tileBegin - maskingHaloUints + index];
+                            // printf("thread %d, i %d, load from gmem %d\n", group.thread_rank(), i, tileBegin - maskingHaloUints + index);
+                        }
+                    }
+                }
+
+                // if(group.thread_rank() == 0){
+                //     for(int i = 0; i < segmentLength + maxMaskingThreshold; i++){
+                //         ((char*)&smem.byteFlags[groupIdInBlock][0])[i] = 42;
+                //     }
+                // }
+                // group.sync();
+                // if(group.thread_rank() == 0){
+                //     printf("flags\n");
+                //     for(int i = 0; i < segmentLength + maxMaskingThreshold; i++){
+                //         printf("%d ", ((char*)&smem.byteFlags[groupIdInBlock][0])[i]);
+                //     }
+                //     printf("\n");
+                // }
+                // group.sync();
+
+                for(int i = 0; i < maxUintsPerThread; i++){
+                    const int index = i * block.num_threads() + block.thread_rank();
+                    myTmpElements[i] = applyInputTransform(myTmpElements[i]);
+
+                    const int threadIdOfLeftNeighborElements = block.thread_rank() > 0 ? block.thread_rank() - 1 : block.num_threads() - 1;
+                    uint32_t shflelem = myTmpElements[i];
+                    if(i > 0 && block.thread_rank() == block.num_threads() - 1){
+                        shflelem = myTmpElements[i-1];
+                    }
+                    smem.communication_elements[block.thread_rank()] = shflelem;
+                    block.sync();
+                    uint32_t neighborElements = smem.communication_elements[threadIdOfLeftNeighborElements];
+                    block.sync();
+                    if(i == 0 && block.thread_rank() == 0){
+                        neighborElements = 0;
+                    }
+
+                    alignas(4) char charElements[8];
+                    memcpy(&charElements[0], &neighborElements, 4);
+                    memcpy(&charElements[4], &myTmpElements[i], 4);
+
+                    alignas(4) char currentflags[4];
+                    for(int k = 4; k < 8; k++){
+                        currentflags[k-4] = (charElements[k-1] != charElements[k]);
+                    }
+                    uint32_t flagsvec;
+                    memcpy(&flagsvec, &currentflags[0], 4);
+
+                    if(index < tileWithHaloUints){
+                        smem.byteFlags[index] = flagsvec;
+                    }
+                }
+
+                if(isFirstTile){
+                    if(block.thread_rank() == 0){
+                        //mark begin of whole segment
+                        ((char*)&smem.byteFlags[maskingHaloUints])[0] = 1; 
+                    }
+                }
+                if(isLastTile){
+                    const int segmentLengthInLastTile = segmentLength - tileNr * maxTilesize;
+                    if(block.thread_rank() == ((maskingHaloUints + tileUints) % block.num_threads())){
+                        //mark first oob element
+                        ((char*)&smem.byteFlags[maskingHaloUints])[segmentLengthInLastTile] = 1;                         
+                    }
+                }
+                block.sync();
+
+
+                //counting
+                for(int x = 0; x < maxUintsPerThread; x++){
+                    const int index = x * block.num_threads() + block.thread_rank();
+                    
+                    alignas(4) char charflagarray[4*(maxMaskingHaloUints + 1 + maxMaskingHaloUints)];
+                    for(int i = 0; i < (maxMaskingHaloUints + 1 + maxMaskingHaloUints); i++){
+                        uint32_t tmp = 0x01010101;
+                        memcpy(&charflagarray[4*i], &tmp, 4);
+                    }
+
+                    if(maskingHaloUints <= index && index < maskingHaloUints + tileUints){
+                        uint32_t center = smem.byteFlags[index];
+                        memcpy(&charflagarray[4*maxMaskingHaloUints], &center, 4);
+
+                        #pragma unroll
+                        for(int i = 0; i < maxMaskingHaloUints; i++){
+                            if(i < maskingHaloUints){
+                                uint32_t l = smem.byteFlags[index-1-i];
+                                uint32_t r = smem.byteFlags[index+1+i];
+                                memcpy(&charflagarray[4*(maxMaskingHaloUints-1-i)], &l, 4);
+                                memcpy(&charflagarray[4*(maxMaskingHaloUints+1+i)], &r, 4);
+                            }
+                        }
+                    }
+                    
+                    int counts[4];
+
+                    //for first element, count left
+                    counts[0] = 0;
+                    for(int i = 0; i < maxMaskingThreshold; i++){
+                        counts[0]++;
+                        if(charflagarray[4*maxMaskingHaloUints - i] == 1){
+                            break;
+                        }
+                    }
+                    //for first element, count right
+                    for(int i = 0; i < maxMaskingThreshold-1; i++){
+                        if(charflagarray[4*maxMaskingHaloUints + 1 + i] == 1){
+                            break;
+                        }
+                        counts[0]++;
+                    }
+                    for(int k = 1; k < 4; k++){
+                        if(charflagarray[4*maxMaskingHaloUints+k] == 0){
+                            counts[k] = counts[k-1]; //same segment, same masking criterion
+                        }else{
+                            //new segment begins at k, count to the right
+                            counts[k] = 1;
+                            for(int i = 0; i < maxMaskingThreshold-1; i++){
+                                if(charflagarray[4*maxMaskingHaloUints + 1 + k + i] == 1){
+                                    break;
+                                }
+                                counts[k]++;
+                            }
+                        }
+                    }
+                    
+                    alignas(4) char charElements[4];
+                    memcpy(&charElements[0], &myTmpElements[x], 4);
+                    for(int k = 0; k < 4; k++){
+                        if(counts[k] >= maskingThreshold){
+                            charElements[k] = maskingLetter;
+                        }
+                    }
+                    if(applyExtraPaddingLetter){
+                        if((index-maskingHaloUints) == tileUints-1){
+                            for(int k = 0; k < 4; k++){
+                                if((tileBegin + (index-maskingHaloUints)) * 4 + k >= segmentLength){
+                                    charElements[k] = paddingLetter;
+                                }
+                            }
+                        }
+                    }
+                    memcpy(&myTmpElements[x], &charElements[0], 4);
+
+                    if(maskingHaloUints <= index && index < maskingHaloUints + tileUints){
+                        segmentOutputPtr[tileBegin - maskingHaloUints + index] = myTmpElements[x];
+                    }
+                }
+                block.sync();
+            }
         }
 
     }
-   
-}
+    
+    
+    template<int blocksize, int maxMaskingThreshold, int maxTilesize, class InputOffsetIterator, class InputTransformOp>
+    void callMultiTileWithPlainFlagsKernel(
+        char* __restrict__ d_outputData,
+        const int* __restrict__ d_lengths,
+        InputOffsetIterator d_offsets,
+        const char* __restrict__ d_inputData,
+        int numSegments,
+        int maskingThreshold,
+        char maskingLetter,
+        bool applyExtraPaddingLetter,
+        char paddingLetter,
+        InputTransformOp inputTransformOp,
+        cudaStream_t stream
+    ){
+        if(maskingThreshold > maxMaskingThreshold){
+            throw std::runtime_error("maskingThreshold > maxMaskingThreshold");
+        }
+        int deviceId;
+        int numSMs;
+        CUDACHECK(cudaGetDevice(&deviceId));
+        CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
+    
+        int maxBlocksPerSM = 0;
+    
+        constexpr int maxUintsPerTile = maxTilesize / 4;
+        constexpr int maxMaskingHaloUints = cuda::ceil_div(maxMaskingThreshold, 4);
+        auto kernel = multiTileWithPlainFlagsKernel<blocksize, maxMaskingThreshold, 
+                maxTilesize, InputOffsetIterator, InputTransformOp>;
+        using SmemType = MultiTileWithPlainFlagsKernel1Smem<blocksize, maxUintsPerTile, maxMaskingHaloUints>;
+    
+        int smembytes = sizeof(SmemType);
+    
+        if(smembytes > 48*1024){
+            cudaError_t status = cudaFuncSetAttribute(reinterpret_cast<const void*>(kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, smembytes);
+            if(status != cudaSuccess){
+                cudaGetLastError();
+                throw std::runtime_error("Unable to set cudaFuncAttributeMaxDynamicSharedMemorySize to " + std::to_string(smembytes));
+            }
+        }
+    
+        CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &maxBlocksPerSM,
+            kernel,
+            blocksize, 
+            smembytes
+        ));
+        
+        const int numBlocks = numSMs * maxBlocksPerSM;
+        
+        // std::cout << "numSegments "  << numSegments << ", num blocks " << numBlocks << "\n";
 
+        #ifdef WITH_TIMING
+        std::string timername = "maskingsingleblock::multiTileWithPlainFlagsKernel<";
+        timername += std::to_string(blocksize) + ",";
+        timername += std::to_string(maxMaskingThreshold) + ",";
+        timername += std::to_string(maxTilesize) + ">";
+        helpers::GpuTimer timer1(timername);
+        #endif
+        kernel<<<numBlocks, blocksize, smembytes, stream>>>(
+            d_outputData,
+            d_lengths,
+            d_offsets,
+            d_inputData,
+            numSegments,
+            maskingThreshold,
+            maskingLetter,
+            applyExtraPaddingLetter,
+            paddingLetter,
+            inputTransformOp
+        );
+        #ifdef WITH_TIMING
+        timer1.print();
+        #endif
 
-
-/*
-    Requirements:
-        sequence[i] has length inputLengths[i] and begins at input position inputOffsets[i]
-        sequence[i] is padded to 4 byte boundary
-        d_outputData must not overlap d_inputData
-        d_outputData must be able to contain 4-byte padded sequences
-*/
-template<int outputChunkSize, int maxMaskingThreshold, class InputTransformOp, class InputDataIterator, class InputOffsetIterator, class OutputOffsetIterator>
-void maskSequences_custom_kernel_impl7(
-    char* d_outputData,
-    OutputOffsetIterator d_outputOffsets,
-    InputDataIterator d_inputData, 
-    const int* d_inputLengths, //size numInputSequences
-    InputOffsetIterator d_inputOffsets, //size numInputSequences
-    size_t totalInputElements,
-    int numInputSequences,
-    int maskingThreshold, // replace letters in all repeats >= maskingThreshold by masking maskingLetter
-    char maskingLetter,
-    char paddingLetter, //to pad output sequences to 4 byte boundary
-    InputTransformOp inputTransformOp, // input letters are given by inputTransformOp(d_inputData[i])
-    cudaStream_t stream
-){
-    if(maskingThreshold > maxMaskingThreshold){
-        throw std::runtime_error("maskingThreshold > maxMaskingThreshold");
     }
-    int deviceId;
-    int numSMs;
-    int maxBlocksPerSM = 0;
-    constexpr int blocksize = 256;
-    auto kernel = maskingKernel7_smem_leftright_1warpPerSegment<blocksize, outputChunkSize, maxMaskingThreshold,  
-        InputTransformOp, InputDataIterator, InputOffsetIterator, OutputOffsetIterator>;
 
-    CUDACHECK(cudaGetDevice(&deviceId));
-    CUDACHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, deviceId));
-    CUDACHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-        &maxBlocksPerSM,
-        kernel,
-        blocksize, 
-        0
-    ));
-
-    const int requiredNumBlocks = cuda::ceil_div(numInputSequences, blocksize / 32);
-    const int numBlocks = std::min(requiredNumBlocks, numSMs*maxBlocksPerSM);
-
-    // std::cout << "numBlocks " << numBlocks << "\n";
-
-    kernel<<<numBlocks, blocksize, 0, stream>>>(
-        d_outputData,
-        d_outputOffsets,
-        d_inputData,
-        d_inputLengths,
-        d_inputOffsets,
-        totalInputElements,
-        numInputSequences,
-        maskingThreshold,
-        maskingLetter,
-        paddingLetter,
-        inputTransformOp
-    );
-    CUDACHECKASYNC;
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-template<class InputTransformOp, class InputDataIterator, class InputOffsetIterator, class OutputOffsetIterator>
-void maskSequences(
-    char* d_outputData,
-    OutputOffsetIterator d_outputOffsets,
-    InputDataIterator d_inputData, //returns the letter (char) to consider for masking. each letter must be in range [0, 127]
-    const int* d_inputLengths, //size numInputSequences
-    InputOffsetIterator d_inputOffsets, //size numInputSequences
-    size_t totalInputElements,
-    int numInputSequences,
-    int maskingThreshold, // replace letters in all repeats >= maskingThreshold by masking maskingLetter
-    char maskingLetter,
-    char paddingLetter,
-    InputTransformOp inputTransformOp,
-    cudaStream_t stream
-){
-
-    maskSequences_custom_kernel_impl5(
-        d_outputData,
-        d_outputOffsets,
-        d_inputData,
-        d_inputLengths,
-        d_inputOffsets,
-        totalInputElements,
-        numInputSequences,
-        maskingThreshold,
-        maskingLetter,
-        paddingLetter,
-        inputTransformOp,
-        stream
-    );
-}
 
 
 

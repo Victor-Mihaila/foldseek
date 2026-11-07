@@ -1951,7 +1951,7 @@ namespace kernelparamzero{
 
 namespace half2fmarelu{
 
-
+#if defined(__CUDACC__)
     template<class ScoreType, int numRegs, class Group, class SharedPSSM, class SmemIndexCalculator, int relaxChunkSize_>
     struct GaplessPSSMState{
         using Scalar = typename ScalarScoreType<ScoreType>::type;
@@ -2111,7 +2111,7 @@ namespace half2fmarelu{
             maximum = MathOps::reduce_max(group, maximum);
         }
     };
-
+#endif
 
     /*
     PSSM kernel for a query of max length (2 * groupsize * numRegs)
@@ -2133,6 +2133,7 @@ namespace half2fmarelu{
         __grid_constant__ const InputData inputData,
         __grid_constant__ const PSSM_2D_View<PssmScoreType> strided_PSSM
     ) {
+#if defined(__CUDACC__)        
         static_assert(std::is_same_v<PssmScoreType, __nv_fp8x2_e4m3>);
         static_assert(std::is_same_v<ScoreType, half2>);
 
@@ -2296,6 +2297,7 @@ namespace half2fmarelu{
                 devAlignmentScores[alignmentId] = overall_max;
             }
         }
+#endif        
     }
 
 
@@ -2323,7 +2325,7 @@ namespace half2fmarelu{
         __grid_constant__ float2* const multiTileTempStorage,
         __grid_constant__ const size_t tempStorageElementsPerGroup
     ) {
-
+#if defined(__CUDACC__)
         static_assert(std::is_same_v<PssmScoreType, __nv_fp8x2_e4m3>);
         static_assert(std::is_same_v<ScoreType, half2>);
 
@@ -2614,7 +2616,7 @@ namespace half2fmarelu{
                 }
             }
         }
-
+#endif
     }
 
 

@@ -1,6 +1,12 @@
 #ifndef LIBMARV_SCORE_WITH_ENDPOS_ALIGNMENT_CUH
 #define LIBMARV_SCORE_WITH_ENDPOS_ALIGNMENT_CUH
 
+#include "../cuda_hip_rename.h"
+
+#if defined(__HIPCC__)
+    #include "hip/hip_runtime.h"
+#endif
+
 #include <cuda/cmath>
 
 
@@ -16,7 +22,6 @@
 #include "../alignment_algorithms/gapless/pssmkernels_gapless_float.cuh"
 #include "../alignment_algorithms/smithwaterman/pssmkernels_smithwaterman.cuh"
 
-#include <algorithm>
 #include <map>
 
 #include "../namespace.hpp"
@@ -700,7 +705,7 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
                 
                 int smem = sizeof(SharedPSSM);
                 auto kernel = [&](){
-                    return uint8x4::GaplessFilter_strided_PSSM_singletile_uint8x4_kernel_new<
+                    return uint8x4::GaplessFilter_strided_PSSM_singletile_uint8x4_kernel<
                         ScoreType,
                         blocksize, 
                         groupsize, 
@@ -787,7 +792,7 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
 
                 int smem = sizeof(SharedPSSM);
                 auto kernel = [&](){
-                    return uint8x4::GaplessFilter_strided_PSSM_multitile_uint8x4_kernel_new<ScoreType, blocksize, groupsize, 
+                    return uint8x4::GaplessFilter_strided_PSSM_multitile_uint8x4_kernel<ScoreType, blocksize, groupsize, 
                         numRegs, 
                         true, //withEndPosition
                         subjectIsCaseSensitive,
@@ -1144,6 +1149,9 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
     template<class SingleTileConfigs, class MultiTileConfigs>
     struct MultiConfigScoreWithEndPosAligner : public MultiConfigScoreWithEndPosAlignerInterface{
 
+        static_assert(configsAreSortedByTileSize<typename SingleTileConfigs::type>());
+        static_assert(configsAreSortedByTileSize<typename MultiTileConfigs::type>());
+
         std::vector<std::unique_ptr<ScoreWithEndPosAlignmentInterface>> singleTileAlignerVector;
         std::vector<std::unique_ptr<ScoreWithEndPosAlignmentInterface>> multiTileAlignerVector;
 
@@ -1283,14 +1291,6 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
             if(singleTileAlignerVector.size() == 0 && multiTileAlignerVector.size() == 0){
                 throw std::runtime_error("MultiConfigScoreWithEndPosAligner requires at least one config");
             }
-
-            std::stable_sort(
-                singleTileAlignerVector.begin(),
-                singleTileAlignerVector.end(),
-                [](const auto& l, const auto& r){
-                    return l->getTileSize() < r->getTileSize();
-                }
-            );
 
             if constexpr (SingleTileConfigs::hasPerformanceHints()){
                 auto hints = SingleTileConfigs::getPerformanceHints();

@@ -4,6 +4,7 @@
 #include "../offset_iterator.cuh"
 #include "../util.cuh"
 #include <cstdint>
+#include <array>
 
 #include "../namespace.hpp"
 LIBMARV_NAMESPACE_BEGIN
@@ -49,6 +50,7 @@ struct OneToAllInputDataPSSM{
         int numAlignments{};
         int maximumSubjectLength{};
         PositionsIterator indexIndirection = PositionsIterator::fromCountingIterator(0);
+        const unsigned char* letterTranslation{}; //optional, maps stored bytes to alphabet codes (Metal and SIMD backends)
     };
 
     enum class AlignmentAlgorithmE{
@@ -78,6 +80,13 @@ struct OneToAllInputDataPSSM{
         static constexpr int blocksize = blocksize_;
         static constexpr int groupsize = groupsize_;
         static constexpr int numRegs = numRegs_;
+
+        using ScoreType = typename ScoreTypeFromDatatypeE<datatype>::type;
+        static constexpr int tileSize = groupsize * numRegs * (
+            IsScalarType<ScoreType>::value ? 1 : 
+                (IsVec2Type<ScoreType>::value ? 2 : 
+                    (IsVec4Type<ScoreType>::value ? 4 : 0)));
+        
     };
 
     template<
@@ -97,7 +106,38 @@ struct OneToAllInputDataPSSM{
         static constexpr int blocksize = blocksize_;
         static constexpr int groupsize = groupsize_;
         static constexpr int numRegs = numRegs_;
+
+        static constexpr int tileSize = groupsize * numRegs;
     };
+
+    template<class ConfigTuple>
+    struct ArrayOfTileSizes;
+
+    template<class... Configs>
+    struct ArrayOfTileSizes<std::tuple<Configs...>>{
+        static constexpr std::array<int, sizeof...(Configs)> array{Configs::tileSize ...};
+    };
+
+    template <typename T, std::size_t N, std::size_t... I>
+    constexpr bool array_is_sorted_impl(const std::array<T, N>& a,
+                                  std::index_sequence<I...>)
+    {
+        // pairwise: a[I] < a[I+1]
+        return ((I + 1 < N ? a[I] < a[I + 1] : true) && ...);
+    }
+    
+    template <typename T, std::size_t N>
+    constexpr bool array_is_sorted(const std::array<T, N>& a)
+    {
+        return array_is_sorted_impl(a, std::make_index_sequence<N>{});
+    }
+
+    template<class ConfigTuple>
+    constexpr bool configsAreSortedByTileSize(){
+        constexpr auto tileSizeArray = ArrayOfTileSizes<ConfigTuple>::array;
+
+        return array_is_sorted(tileSizeArray);
+    }
 
 LIBMARV_NAMESPACE_END
 

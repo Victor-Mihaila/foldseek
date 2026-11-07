@@ -1,6 +1,12 @@
 #ifndef LIBMARV_SCORE_WITH_ENDPOS_ALIGNMENT_INTERFACES_CUH
 #define LIBMARV_SCORE_WITH_ENDPOS_ALIGNMENT_INTERFACES_CUH
 
+#include "../cuda_hip_rename.h"
+
+#if defined(__HIPCC__)
+    #include "hip/hip_runtime.h"
+#endif
+
 
 #include "../pssm.cuh"
 #include "../util.cuh"
@@ -17,6 +23,8 @@
 LIBMARV_NAMESPACE_BEGIN
 
     struct ScoreWithEndPosAlignmentInterface{
+        virtual ~ScoreWithEndPosAlignmentInterface() = default;
+
         virtual bool isSingleTile(const OneToAllInputDataPSSM& inputData) const = 0;
 
         virtual int getTileSize() const = 0;
@@ -57,6 +65,8 @@ LIBMARV_NAMESPACE_BEGIN
     };
 
     struct MultiConfigScoreWithEndPosAlignerInterface{
+        virtual ~MultiConfigScoreWithEndPosAlignerInterface() = default;
+
         virtual bool isSingleTile(const OneToAllInputDataPSSM& inputData) const = 0;
 
         virtual int getTileSize(const OneToAllInputDataPSSM& inputData) const = 0;

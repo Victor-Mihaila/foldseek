@@ -22,11 +22,11 @@ void printOptions(const ProgramOptions& options){
     for(size_t i = 0; i < options.queryFiles.size(); i++){
         std::cout << "queryFile " << i  << " : " << options.queryFiles[i] << "\n";
     }
-    #ifdef CAN_USE_FULL_BLOSUM
-    std::cout << "blosum: " << to_string(options.blosumType) << "\n";
-    #else
-    std::cout << "blosum: " << to_string_nodim(options.blosumType) << "\n";
-    #endif
+    // #ifdef CAN_USE_FULL_BLOSUM
+    // std::cout << "blosum: " << to_string(options.blosumType) << "\n";
+    // #else
+    // std::cout << "blosum: " << to_string_nodim(options.blosumType) << "\n";
+    // #endif
     if(options.usePseudoDB){
         std::cout << "Using built-in pseudo db with " << options.pseudoDBSize 
             << " sequences of length " << options.pseudoDBLength << ". ";
@@ -152,26 +152,26 @@ bool parseArgs(int argc, char** argv, ProgramOptions& options){
             options.dbPrefix = argv[++i];
             gotDB = true;
         }else if(arg == "--mat"){
-            const std::string val = argv[++i];
-            #ifdef CAN_USE_FULL_BLOSUM
-            if(val == "blosum45") options.blosumType = libmarv::BlosumType::BLOSUM45;
-            if(val == "blosum50") options.blosumType = libmarv::BlosumType::BLOSUM50;
-            if(val == "blosum62") options.blosumType = libmarv::BlosumType::BLOSUM62;
-            if(val == "blosum80") options.blosumType = libmarv::BlosumType::BLOSUM80;
-            if(val == "blosum45_20") options.blosumType = libmarv::BlosumType::BLOSUM45_20;
-            if(val == "blosum50_20") options.blosumType = libmarv::BlosumType::BLOSUM50_20;
-            if(val == "blosum62_20") options.blosumType = libmarv::BlosumType::BLOSUM62_20;
-            if(val == "blosum80_20") options.blosumType = libmarv::BlosumType::BLOSUM80_20;
-            #else
-            if(val == "blosum45") options.blosumType = libmarv::BlosumType::BLOSUM45_20;
-            if(val == "blosum50") options.blosumType = libmarv::BlosumType::BLOSUM50_20;
-            if(val == "blosum62") options.blosumType = libmarv::BlosumType::BLOSUM62_20;
-            if(val == "blosum80") options.blosumType = libmarv::BlosumType::BLOSUM80_20;
-            if(val == "blosum45_20") options.blosumType = libmarv::BlosumType::BLOSUM45_20;
-            if(val == "blosum50_20") options.blosumType = libmarv::BlosumType::BLOSUM50_20;
-            if(val == "blosum62_20") options.blosumType = libmarv::BlosumType::BLOSUM62_20;
-            if(val == "blosum80_20") options.blosumType = libmarv::BlosumType::BLOSUM80_20;
-            #endif
+            // const std::string val = argv[++i];
+            // #ifdef CAN_USE_FULL_BLOSUM
+            // if(val == "blosum45") options.blosumType = libmarv::BlosumType::BLOSUM45;
+            // if(val == "blosum50") options.blosumType = libmarv::BlosumType::BLOSUM50;
+            // if(val == "blosum62") options.blosumType = libmarv::BlosumType::BLOSUM62;
+            // if(val == "blosum80") options.blosumType = libmarv::BlosumType::BLOSUM80;
+            // if(val == "blosum45_20") options.blosumType = libmarv::BlosumType::BLOSUM45_20;
+            // if(val == "blosum50_20") options.blosumType = libmarv::BlosumType::BLOSUM50_20;
+            // if(val == "blosum62_20") options.blosumType = libmarv::BlosumType::BLOSUM62_20;
+            // if(val == "blosum80_20") options.blosumType = libmarv::BlosumType::BLOSUM80_20;
+            // #else
+            // if(val == "blosum45") options.blosumType = libmarv::BlosumType::BLOSUM45_20;
+            // if(val == "blosum50") options.blosumType = libmarv::BlosumType::BLOSUM50_20;
+            // if(val == "blosum62") options.blosumType = libmarv::BlosumType::BLOSUM62_20;
+            // if(val == "blosum80") options.blosumType = libmarv::BlosumType::BLOSUM80_20;
+            // if(val == "blosum45_20") options.blosumType = libmarv::BlosumType::BLOSUM45_20;
+            // if(val == "blosum50_20") options.blosumType = libmarv::BlosumType::BLOSUM50_20;
+            // if(val == "blosum62_20") options.blosumType = libmarv::BlosumType::BLOSUM62_20;
+            // if(val == "blosum80_20") options.blosumType = libmarv::BlosumType::BLOSUM80_20;
+            // #endif
         }else if(arg == "--pseudodb"){
             options.usePseudoDB = true;
             options.pseudoDBSize = std::atoi(argv[++i]);
@@ -238,15 +238,14 @@ void printHelp(int /*argc*/, char** argv){
 
     std::cout << "   Scoring\n";
     std::cout << "      --top val : Output the val best scores. Default val = " << defaultoptions.numTopOutputs << "\n";
-    std::cout << "      --gop val : Gap open score. Overwrites our blosum-dependent default score.\n";
-    std::cout << "      --gex val : Gap extend score. Overwrites our blosum-dependent default score.\n";
-    #ifdef CAN_USE_FULL_BLOSUM
-    std::cout << "      --mat val: Set substitution matrix. Supported values: blosum45, blosum50, blosum62, blosum80, blosum45_20, blosum50_20, blosum62_20, blosum80_20. "
-                        "Default: " << "blosum62_20" << "\n";
-    #else 
-    std::cout << "      --mat val: Set substitution matrix. Supported values: blosum45, blosum50, blosum62, blosum80. "
-                        "Default: " << "blosum62" << "\n";
-    #endif
+    std::cout << "      --gop val : Gap open score for SW\n";
+    std::cout << "      --gex val : Gap extend score for SW\n";
+    // #ifdef CAN_USE_FULL_BLOSUM
+    // std::cout << "      --mat val: Set substitution matrix. Supported values: blosum45, blosum50, blosum62, blosum80, blosum45_20, blosum50_20, blosum62_20, blosum80_20. "
+    //                     "Default: " << "blosum62_20" << "\n";
+    // #else 
+    // std::cout << "      --mat val: Set substitution matrix. Supported values: blosum45, blosum50, blosum62, blosum80. "
+    //                     "Default: " << "blosum62" << "\n";
     std::cout << "      --scanType val : Set scan type. Supported values = {Gapless, SW, Gapless_Endpos, SW_Endpos, Gapless+SW_Endpos, Foldseek}.\n";
     std::cout << "            Gapless: Scan whole DB with gapless alignment. \n";
     std::cout << "            SW_Endpos: Scan whole DB with Smith Waterman Alignment, output score and end position.\n";
@@ -276,8 +275,8 @@ void printHelp(int /*argc*/, char** argv){
     std::cout << "      --uploadFull : If enough GPU memory is available to store full db, copy full DB to GPU before processing queries.\n";
     std::cout << "      --pseudodb num length sameSeq: Use a generated DB which contains `num` equal sequences of length `length`."
                         "sameSeq can be 0 or 1. If `sameSeq`!=0, all sequences in DB will be identical\n";
-    std::cout << "      --allowInt8\n";
-    std::cout << "      --handleOverflows\n";
+    std::cout << "      --allowInt8 : Compute alignments in 8-bit precision, if available\n";
+    std::cout << "      --handleOverflows : Re-compute overflowing alignment scores in higher precision\n";
     std::cout << "      --queryBatchsize val\n";
     
     std::cout << "\n";

@@ -1,6 +1,12 @@
 #ifndef LIBMARV_SCORE_ONLY_ALIGNMENT_CUH
 #define LIBMARV_SCORE_ONLY_ALIGNMENT_CUH
 
+#include "../cuda_hip_rename.h"
+
+#if defined(__HIPCC__)
+    #include "hip/hip_runtime.h"
+#endif
+
 #include <cuda/cmath>
 
 
@@ -16,7 +22,6 @@
 #include "../alignment_algorithms/gapless/pssmkernels_gapless_int8.cuh"
 #include "../alignment_algorithms/smithwaterman/pssmkernels_smithwaterman.cuh"
 
-#include <algorithm>
 #include <map>
 #include <cuda/std/mdspan>
 
@@ -286,10 +291,12 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
 
         private:
         size_t getTileTempBytesPerGroup(const OneToAllInputDataPSSM& inputData) const{
-            using TempStorageDataType = float4;
+            static_assert(sizeof(ScoreType) == 4); //e.g. 1 float
 
             const int maximumSequenceLengthPadded = inputData.getMaximumSubjectLength() + groupsize;
-            const size_t tileTempBytesPerGroup = sizeof(TempStorageDataType) * maximumSequenceLengthPadded;
+
+            //1 float per position, 4 floats are stored vectorized to temp storage, round up appropriatly to ensure pointer alignment
+            const size_t tileTempBytesPerGroup = cuda::round_up(4ull * maximumSequenceLengthPadded, 16ull);
             return tileTempBytesPerGroup;
         }
 
@@ -620,10 +627,12 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
 
     private:
         size_t getTileTempBytesPerGroup(const OneToAllInputDataPSSM& inputData) const{
-            using TempStorageDataType = float2;
+            static_assert(sizeof(ScoreType) == 4); //e.g. 2 halfs
 
             const int maximumSequenceLengthPadded = inputData.getMaximumSubjectLength() + groupsize;
-            const size_t tileTempBytesPerGroup = sizeof(TempStorageDataType) * maximumSequenceLengthPadded;
+
+            //1 half per position, 4 halfs are stored vectorized to temp storage, round up appropriatly to ensure pointer alignment
+            const size_t tileTempBytesPerGroup = cuda::round_up(2 * maximumSequenceLengthPadded, 8);
             return tileTempBytesPerGroup;
         }
 
@@ -759,9 +768,11 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
                         blocksize, 
                         groupsize, 
                         numRegs, 
+                        false, //false = score only
                         subjectIsCaseSensitive,
                         int*,
-                        PssmScoreType, OneToAllInputDataPSSM>;
+                        PssmScoreType, 
+                        OneToAllInputDataPSSM>;
                 }();
 
                 auto setSmemKernelAttribute = [&](){
@@ -785,6 +796,8 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
                 // std::cout << "GaplessFilter_strided_PSSM_singletile_uint8x4_kernel " << grid.x << " " << blocksize << " " << smem << ", numAlignments " << numAlignments << "\n";
                 kernel<<<grid, blocksize, smem, stream>>>(
                     devAlignmentScores,
+                    nullptr,
+                    nullptr,
                     inputData,
                     getPssmView(strided_PSSM),
                     substitutionScoreBias_vec4
@@ -835,7 +848,9 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
                 int smem = sizeof(SharedPSSM);
                 auto kernel = [&](){
                     return uint8x4::GaplessFilter_strided_PSSM_multitile_uint8x4_kernel<ScoreType, blocksize, groupsize, 
-                        numRegs, subjectIsCaseSensitive,
+                        numRegs, 
+                        false, //false = score only
+                        subjectIsCaseSensitive,
                         int*, PssmScoreType, OneToAllInputDataPSSM>;
                 }();
 
@@ -886,6 +901,8 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
 
                 kernel<<<grid, blocksize, smem, stream>>>(
                     devAlignmentScores,
+                    nullptr,
+                    nullptr,
                     inputData,
                     getPssmView(strided_PSSM),
                     substitutionScoreBias_vec4,
@@ -897,10 +914,12 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
 
     private:
         size_t getTileTempBytesPerGroup(const OneToAllInputDataPSSM& inputData) const{
-            using TempStorageDataType = std::uint32_t;
+            static_assert(sizeof(ScoreType) == 4); //e.g. 1 uint8x4
 
             const int maximumSequenceLengthPadded = inputData.getMaximumSubjectLength() + groupsize;
-            const size_t tileTempBytesPerGroup = sizeof(TempStorageDataType) * maximumSequenceLengthPadded;
+
+            //1 int8 per position, 4 int8 are stored vectorized to temp storage, round up appropriatly to ensure pointer alignment
+            const size_t tileTempBytesPerGroup = cuda::round_up(1ull * maximumSequenceLengthPadded, 4ull);
             return tileTempBytesPerGroup;
         }
 
@@ -1166,7 +1185,7 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
 
     private:
         size_t getTileTempBytesPerGroup(const OneToAllInputDataPSSM& inputData) const{
-            using TempStorageDataType = float2;
+            using TempStorageDataType = float2; //two floats per position (affine scores)
 
             const int maximumSequenceLengthPadded = inputData.getMaximumSubjectLength() + groupsize;
             const size_t tileTempBytesPerGroup = sizeof(TempStorageDataType) * maximumSequenceLengthPadded;
@@ -1185,6 +1204,9 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
 
     template<class SingleTileConfigs, class MultiTileConfigs>
     struct MultiConfigScoreOnlyAligner : public MultiConfigScoreOnlyAlignerInterface{
+
+        static_assert(configsAreSortedByTileSize<typename SingleTileConfigs::type>());
+        static_assert(configsAreSortedByTileSize<typename MultiTileConfigs::type>());
 
         std::vector<std::unique_ptr<ScoreOnlyAlignmentInterface>> singleTileAlignerVector;
         std::vector<std::unique_ptr<ScoreOnlyAlignmentInterface>> multiTileAlignerVector;
@@ -1326,14 +1348,6 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
             if(singleTileAlignerVector.size() == 0 && multiTileAlignerVector.size() == 0){
                 throw std::runtime_error("MultiConfigScoreOnlyAligner requires at least one config");
             }
-
-            std::stable_sort(
-                singleTileAlignerVector.begin(),
-                singleTileAlignerVector.end(),
-                [](const auto& l, const auto& r){
-                    return l->getTileSize() < r->getTileSize();
-                }
-            );
 
             if constexpr (SingleTileConfigs::hasPerformanceHints()){
                 auto hints = SingleTileConfigs::getPerformanceHints();

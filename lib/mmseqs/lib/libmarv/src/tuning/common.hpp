@@ -29,7 +29,8 @@ struct Stuff1{
     thrust::device_vector<int> d_subjectLengths;
     thrust::device_vector<size_t> d_subjectBeginOffsets;
     thrust::device_vector<int> d_scoreOutput;
-    thrust::device_vector<int> d_outputIndices;
+    thrust::device_vector<int> d_subjectEndPositionsExcl;
+    thrust::device_vector<int> d_queryEndPositionsExcl;
 };
 
 __forceinline__
@@ -76,8 +77,8 @@ Stuff1 makeStuff1(){
     stuff.d_subjectLengths = thrust::device_vector<int>(maxNumAlignments);
     stuff.d_subjectBeginOffsets = thrust::device_vector<size_t>(maxNumAlignments);
     stuff.d_scoreOutput = thrust::device_vector<int>(maxNumAlignments);
-    stuff.d_outputIndices = thrust::device_vector<int>(maxNumAlignments);
-    
+    stuff.d_subjectEndPositionsExcl = thrust::device_vector<int>(maxNumAlignments);
+    stuff.d_queryEndPositionsExcl = thrust::device_vector<int>(maxNumAlignments);   
 
     return stuff;
 }

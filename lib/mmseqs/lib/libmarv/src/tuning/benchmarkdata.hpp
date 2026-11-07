@@ -11,6 +11,12 @@
 #include <iostream>
 
 
+enum class AlignmentResultKind{
+    ScoreOnly,
+    ScoreEndpos
+};
+
+std::string to_string(AlignmentResultKind);
 
 
 struct BenchmarkData{
@@ -23,6 +29,7 @@ struct BenchmarkData{
     float maxgcups;
     std::string datatypeString;
     std::string approachString;
+    std::string resultkindString;
     int numTiles;
 };
 
@@ -39,7 +46,8 @@ template<
     int groupsize,
     int numItems,
     int tilesize,
-    class ApproachAndType
+    class ApproachAndType,
+    AlignmentResultKind resultkind
 >
 BenchmarkData makeNotExecutedBenchmarkData(){
     BenchmarkData benchmarkData;
@@ -52,6 +60,7 @@ BenchmarkData makeNotExecutedBenchmarkData(){
     benchmarkData.maxgcups = 0;
     benchmarkData.datatypeString = to_string(ApproachAndType::datatype);
     benchmarkData.approachString = to_string(ApproachAndType::approach);
+    benchmarkData.resultkindString = to_string(resultkind);
     benchmarkData.numTiles = 0;
 
     return benchmarkData;

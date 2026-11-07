@@ -2,7 +2,7 @@
 #include "benchmarkdata.hpp"
 #include "common.hpp"
 #include "configtuples.hpp"
-#include "benchmark_short2_scoreonly.cuh"
+#include "benchmark_scoreonly.cuh"
 
 #include <vector>
 
@@ -21,7 +21,7 @@ std::vector<BenchmarkData> benchmark_short2_scoreOnly_singleTile(
 
     constexpr bool singleTile = true;
 
-    std::vector<BenchmarkData> vec = short2_scoreonly::ForEachCombination_call_singleconfigFunction<
+    std::vector<BenchmarkData> vec = scoreonly::ForEachCombination_call_singleconfigFunction<
         BlockSizeTuple,
         GroupSizeTuple,
         NumItemsTuple,

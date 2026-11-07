@@ -5,6 +5,8 @@
 
 #include "hpc_helpers/simple_allocation.cuh"
 
+#include "util.cuh"
+
 #include "namespace.hpp"
 LIBMARV_NAMESPACE_BEGIN
 
@@ -26,7 +28,7 @@ struct GpuDatabaseAllocation : public GpuDatabaseAllocationBase{
 
     GpuDatabaseAllocation() : GpuDatabaseAllocation(0,0) {}
     GpuDatabaseAllocation(size_t numChars, size_t numSubjects){
-        d_fulldb_chardata.resize(numChars);
+        d_fulldb_chardata.resize(getSequenceCharsAllocationSize(numChars));
         d_fulldb_lengthdata.resize(numSubjects);
         d_fulldb_offsetdata.resize(numSubjects+1);
     }

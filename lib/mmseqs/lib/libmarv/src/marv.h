@@ -16,7 +16,15 @@ public:
         FOLDSEEK_3DI_AA12
     };
 
+    struct MemoryConfig {
+        size_t maxGpuMem = SIZE_MAX; // per device: database cache and transfer buffers
+        size_t maxBatchBytes = 128ull * 1024 * 1024;
+        size_t maxBatchSequences = 10'000'000;
+        size_t maxCachedQueryBytes = 512ull * 1024 * 1024; // score-only workspace kept between searches, 0 disables
+    };
     Marv(size_t dbEntries, int alphabetSize);
+    Marv(size_t dbEntries, int alphabetSize, const MemoryConfig& memoryConfig);
+    void releaseSearchWorkspace();
     ~Marv();
 
     static std::vector<int> getDeviceIds();
@@ -28,6 +36,13 @@ public:
 
     void printInfo();
     void prefetch();
+
+    /*
+        Databases that are not in the padded GPU format may store letters in another encoding (e.g. ASCII).
+        table has 256 entries mapping a stored byte to its alphabet code; the kernels translate while scanning.
+        Only available on the Metal and SIMD backends.
+    */
+    void setLetterTranslation(const unsigned char* table);
 
     struct Stats {
         size_t results;
@@ -63,7 +78,7 @@ public:
         int gop, 
         int gex,
         bool int8IsAllowed, // allow alignments in 8-bit precision. automatic fallback to greater precision if 8-bit is not available
-        bool handleOverflows, // recompute overflows (currently this means retry 8-bit alignments with 16-bit)
+        bool handleOverflows, // recompute overflows; use 32-bit retries when 16-bit cannot guarantee exact scores
         std::vector<std::int32_t>* subsetIdsPtr_ = nullptr //. dont search full database, but only the db sequences with subsetids. nullptr if unused
     );
 
@@ -199,6 +214,7 @@ private:
     // void* db;
     void* dbmanager;
     void* gpuDatabaseVoidPtr;
+    void* searchWorkspaceVoidPtr;
 };
 
 #endif

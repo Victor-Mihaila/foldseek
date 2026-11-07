@@ -1,6 +1,12 @@
 #ifndef LIBMARV_SEARCH_COMMON_CUH
 #define LIBMARV_SEARCH_COMMON_CUH
 
+#include "../cuda_hip_rename.h"
+
+#if defined(__HIPCC__)
+    #include "hip/hip_runtime.h"
+#endif
+
 #include <memory>
 #include <vector>
 

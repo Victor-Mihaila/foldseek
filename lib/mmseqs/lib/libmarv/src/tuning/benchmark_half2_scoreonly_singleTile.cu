@@ -2,7 +2,7 @@
 #include "benchmarkdata.hpp"
 #include "common.hpp"
 #include "configtuples.hpp"
-#include "benchmark_half2_scoreonly.cuh"
+#include "benchmark_scoreonly.cuh"
 
 #include <vector>
 
@@ -15,8 +15,8 @@ std::vector<BenchmarkData> benchmark_half2_scoreOnly_singleTile(
 ){
     using ApproachAndTypeTuple = std::tuple<
         libmarv::ApproachAndType<Approach::hardcodedzero, Datatype::Half2>,
-        libmarv::ApproachAndType<Approach::kernelparamzero, Datatype::Half2>,
-        libmarv::ApproachAndType<Approach::half2fmarelu, Datatype::Half2>        
+        libmarv::ApproachAndType<Approach::kernelparamzero, Datatype::Half2>
+        // libmarv::ApproachAndType<Approach::half2fmarelu, Datatype::Half2>        
     >;
 
     constexpr bool singleTile = true;
@@ -27,7 +27,7 @@ std::vector<BenchmarkData> benchmark_half2_scoreOnly_singleTile(
     using NumItemsTupleFoo = std::tuple<IC<1>, IC<2>, IC<3>, IC<4>, IC<5>, IC<6>, IC<7>, IC<8>, IC<10>, IC<12>, IC<14>, IC<16>, IC<18>>;
     // using NumItemsTupleFoo = std::tuple<IC<2>>;
 
-    std::vector<BenchmarkData> vec = half2_scoreonly::ForEachCombination_call_singleconfigFunction<
+    std::vector<BenchmarkData> vec = scoreonly::ForEachCombination_call_singleconfigFunction<
         BlockSizeTuple,
         GroupSizeTuple,
         NumItemsTuple,

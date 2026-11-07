@@ -84,11 +84,11 @@ struct HybridBatch{
     static_assert(charweight + offsetweight + lengthweight + headersweight + headeroffsetweight == 100);
 
     HybridBatch(const std::string& temppath, size_t memoryLimit) : 
-        chars(0, (memoryLimit / 100) * charweight, temppath + "_cudasw4tmpchars"),
-        offsets(0, (memoryLimit / 100) * offsetweight, temppath + "_cudasw4tmpoffsets"),
-        lengths(0, (memoryLimit / 100) * lengthweight, temppath + "_cudasw4tmplengths"),
-        headers(0, (memoryLimit / 100) * headersweight, temppath + "_cudasw4tmpheaders"),
-        headerOffsets(0, (memoryLimit / 100) * headeroffsetweight, temppath + "_cudasw4tmpheaderOffsets")
+        chars(0, (memoryLimit / 100) * charweight, temppath + "_libmarvtmpchars"),
+        offsets(0, (memoryLimit / 100) * offsetweight, temppath + "_libmarvtmpoffsets"),
+        lengths(0, (memoryLimit / 100) * lengthweight, temppath + "_libmarvtmplengths"),
+        headers(0, (memoryLimit / 100) * headersweight, temppath + "_libmarvtmpheaders"),
+        headerOffsets(0, (memoryLimit / 100) * headeroffsetweight, temppath + "_libmarvtmpheaderOffsets")
     {
 
     }

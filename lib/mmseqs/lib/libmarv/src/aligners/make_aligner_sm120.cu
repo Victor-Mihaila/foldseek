@@ -1,7 +1,6 @@
 #include "score_only_alignment.cuh"
 #include "score_only_alignment_interfaces.cuh"
-#include "score_with_endpos_alignment.cuh"
-#include "score_with_endpos_alignment_interfaces.cuh"
+
 
 #include <memory>
 
@@ -13,45 +12,54 @@ LIBMARV_NAMESPACE_BEGIN
 
         struct SingleTileConfigs{
             using type = std::tuple<
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 4, 4>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 4, 8>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 4, 12>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 4, 16>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 512, 4, 20>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 4, 24>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 4, 28>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 128, 4, 32>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 4, 36>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 4, 40>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 4, 44>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 4, 48>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 4, 52>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 4, 56>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 4, 60>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 4, 64>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 8, 36>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 8, 40>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 8, 44>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 8, 48>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 8, 52>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 8, 56>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 8, 60>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 8, 64>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 256, 16, 36>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 512, 16, 40>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 512, 16, 44>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 512, 16, 48>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 512, 16, 52>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 512, 16, 56>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 512, 16, 60>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 512, 16, 64>,
-                GaplessConfig<21,Approach::unused, Datatype::UInt8x4, 512, 32, 36>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 2, 4>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 2, 8>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 2, 12>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 2, 16>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 2, 20>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 2, 24>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 2, 28>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 2, 32>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 128, 2, 36>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 40>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 44>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 2, 48>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 52>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 56>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 2, 60>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 2, 64>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 128, 4, 36>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 4, 40>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 4, 44>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 4, 48>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 4, 52>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 4, 56>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 4, 60>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 4, 64>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 128, 8, 36>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 8, 40>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 8, 44>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 8, 48>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 8, 52>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 8, 56>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 8, 60>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 8, 64>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 16, 36>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 40>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 44>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 48>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 52>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 56>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 60>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 64>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 32, 36>
             >;
 
             static constexpr auto getPerformanceHints(){
-                constexpr auto result = std::array{26258,33804,38168,40405,42943,44209,45167,45178,47466,
-                    47379,47432,48142,48963,49607,49607,50046,48108,48327,47959,48725,49383,50148,49808,50444,
-                    47593,47702,47773,47697,48978,50092,48573,50152,47702};
+                constexpr auto result = std::array{22408,32484,37096,37791,41848,42785,42098,
+                        42242,43157,43745,44487,44468,45521,46303,46238,46591,45366,45497,46209,46425,
+                        47158,47578,47707,48251,46059,46395,46830,47420,50063,48106,50665,51225,48251,
+                        48439,49266,48599,49996,50561,49619,51125,47545};
 
                 static_assert(result.size() == std::tuple_size_v<type>);
 
@@ -59,7 +67,7 @@ LIBMARV_NAMESPACE_BEGIN
             };
 
             static constexpr bool hasPerformanceHints(){
-                return true;
+                return false;
             }
 
             
@@ -68,46 +76,62 @@ LIBMARV_NAMESPACE_BEGIN
     
         struct MultiTileConfigs{
             using type = std::tuple<
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 128, 4, 32>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 128, 4, 36>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 4, 40>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 4, 44>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 128, 4, 48>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 4, 52>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 4, 56>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 4, 60>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 128, 8, 32>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 128, 8, 36>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 128, 8, 40>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 128, 8, 44>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 128, 8, 48>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 8, 52>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 128, 8, 56>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 128, 8, 60>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 8, 64>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 16, 36>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 40>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 44>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 48>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 52>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 56>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 16, 60>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 64>, 
-                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 32, 36>, 
+                // GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 4>,
+                // GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 8>,
+                // GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 12>,
+                // GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 16>,
+                // GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 20>,
+                // GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 24>,
+                // GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 28>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 32>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 36>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 40>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 44>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 48>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 52>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 2, 56>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 2, 60>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 2, 64>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 4, 36>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 4, 40>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 4, 44>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 4, 48>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 4, 52>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 4, 56>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 4, 60>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 4, 64>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 8, 36>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 8, 40>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 8, 44>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 8, 48>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 8, 52>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 8, 56>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 8, 60>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 8, 64>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 36>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 40>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 44>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 48>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 52>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 56>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 256, 16, 60>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 16, 64>,
+                GaplessConfig<21, Approach::unused, Datatype::UInt8x4, 512, 32, 36>
             >;
 
-            static constexpr auto getPerformanceHints(){
-                constexpr auto result = std::array{43485,44907,
-                    43469,44302,44207,44861,44024,42347,44803,45920,45841,46194,46474,44034,44043,
-                    43945,41950,41922,42657,42826,43669,43716,43714,39791,42239,42729};
+            // static constexpr auto getPerformanceHints(){
+            //     constexpr auto result = std::array{17050,27868,32386,33633,36155,36783,38412,
+            //             41279,41795,42799,43866,43564,45344,45213,44840,45088,44466,45559,45914,45779,
+            //             47407,47802,45505,47120,45306,46466,46749,46343,47762,48035,46529,47040,46010,
+            //             46954,46840,46372,47375,48178,46833,47808,45754};
 
-                static_assert(result.size() == std::tuple_size_v<type>);
+            //     static_assert(result.size() == std::tuple_size_v<type>);
 
-                return result;
-            };
+            //     return result;
+            // };
 
             static constexpr bool hasPerformanceHints(){
-                return true;
+                return false;
             }
 
             
@@ -121,25 +145,33 @@ LIBMARV_NAMESPACE_BEGIN
     std::unique_ptr<MultiConfigScoreOnlyAlignerInterface> make_multiconfig_gapless_aligner_sm120_16bit(){
         struct SingleTileConfigs{
             using type = std::tuple<
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 4, 4>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 4, 8>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 4, 12>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 4, 16>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 4, 20>,
-                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 256, 4, 24>,
-                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 256, 4, 28>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 4, 32>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 4, 36>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 4, 40>,
-                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 256, 4, 44>,
+                GaplessConfig<21, Approach::kernelparamzero, Datatype::Half2, 256, 2, 4>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 2, 8>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Half2, 128, 2, 12>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 2, 16>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 2, 20>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 2, 24>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 2, 28>,
+                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 256, 2, 32>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 2, 36>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 2, 40>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 2, 44>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 2, 48>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 2, 52>,
+                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 512, 2, 56>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 2, 60>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 2, 64>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 128, 4, 36>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 4, 40>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 4, 44>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 4, 48>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 4, 52>,
-                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 256, 4, 56>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 4, 60>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 4, 64>,
+                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 512, 4, 56>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 4, 60>,
+                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 512, 4, 64>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 8, 36>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 8, 40>,
-                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 256, 8, 44>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 8, 44>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 8, 48>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 8, 52>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 8, 56>,
@@ -147,19 +179,20 @@ LIBMARV_NAMESPACE_BEGIN
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 8, 64>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 16, 36>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 16, 40>,
-                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 512, 16, 44>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 16, 44>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 16, 48>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 16, 52>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 16, 56>,
-                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 512, 16, 60>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 16, 60>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 16, 64>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 32, 36>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 32, 36>
             >;
 
             static constexpr auto getPerformanceHints(){
-                constexpr auto result = std::array{12736,17343,19042,20001,21370,21701,22414,
-                    22963,22821,23135,23350,23584,23802,24125,24147,24181,23352,23698,23745,
-                    24005,24118,24362,24425,24383,23502,23639,23649,23757,24038,24352,24201,24343,23743,};
+                constexpr auto result = std::array{8983,15629,18041,19502,20843,21705,21976,22128,21717,
+                        22415,22812,22912,23202,23591,23839,23879,22081,22045,22680,22567,22832,24077,
+                        24116,24245,23677,23865,23986,24233,24467,24650,24937,24860,23844,23824,24047,
+                        24142,24414,24669,24737,24867,23787};
 
                 static_assert(result.size() == std::tuple_size_v<type>);
 
@@ -173,23 +206,38 @@ LIBMARV_NAMESPACE_BEGIN
     
         struct MultiTileConfigs{
             using type = std::tuple<
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 4, 32>,
+                // GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 2, 4>,
+                // GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 2, 8>,
+                // GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 2, 12>,
+                // GaplessConfig<21, Approach::hardcodedzero, Datatype::Half2, 512, 2, 16>,
+                // GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 2, 20>,
+                // GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 2, 24>,
+                // GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 2, 28>,
+                // GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 2, 32>,
+                // GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 2, 36>,
+                // GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 2, 40>,
+                // GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 2, 44>,
+                // GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 2, 48>,
+                // GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 512, 2, 52>,
+                // GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 2, 56>,
+                // GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 512, 2, 60>,
+                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 512, 2, 64>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 4, 36>,
-                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 512, 4, 40>,
-                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 512, 4, 44>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 4, 40>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 4, 44>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 4, 48>,
-                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 512, 4, 52>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 4, 52>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 4, 56>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 4, 60>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 4, 64>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 8, 36>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 8, 40>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 8, 44>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 8, 48>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 8, 52>,
+                GaplessConfig<21, Approach::kernelparamzero, Datatype::Short2, 512, 4, 64>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 8, 36>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 8, 40>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 8, 44>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 8, 48>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 8, 52>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 8, 56>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 8, 60>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 256, 8, 64>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 8, 60>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 8, 64>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 16, 36>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 16, 40>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 16, 44>,
@@ -197,15 +245,82 @@ LIBMARV_NAMESPACE_BEGIN
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 16, 52>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 16, 56>,
                 GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 16, 60>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 16, 64>,
-                GaplessConfig<21, Approach::hardcodedzero, Datatype::Half2, 512, 32, 36>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Half2, 512, 16, 64>,
+                GaplessConfig<21, Approach::hardcodedzero, Datatype::Short2, 512, 32, 36>
             >;
 
 
+            // static constexpr auto getPerformanceHints(){
+            //     constexpr auto result = std::array{7354,13357,15633,17035,18792,19762,20383,20775,
+            //             21903,22110,22513,22363,22957,23318,22915,22721,22609,23000,23349,23423,23901,24015,
+            //             23791,23489,22915,23401,23492,23812,23951,24242,24034,23476,23153,23393,23436,23422,
+            //             23597,23466,23547,23184,22657};
+
+            //     static_assert(result.size() == std::tuple_size_v<type>);
+
+            //     return result;
+            // };
+
+            static constexpr bool hasPerformanceHints(){
+                return false;
+            }
+        };
+    
+                    
+        return std::make_unique<MultiConfigScoreOnlyAligner<SingleTileConfigs, MultiTileConfigs>>(AlignmentAlgorithmE::Gapless);
+    }
+
+    std::unique_ptr<MultiConfigScoreOnlyAlignerInterface> make_multiconfig_gapless_aligner_sm120_32bit(){
+        struct SingleTileConfigs{
+            using type = std::tuple<
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 4>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 2, 8>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 2, 12>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 2, 16>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 2, 20>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 2, 24>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 2, 28>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 2, 32>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 2, 36>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 2, 40>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 2, 44>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 2, 48>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 2, 52>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 4, 28>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 2, 60>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 2, 64>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 4, 36>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 8, 20>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 4, 44>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 8, 24>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 4, 52>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 4, 56>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 4, 60>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 4, 64>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 8, 36>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 16, 20>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 8, 44>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 8, 48>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 52>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 8, 56>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 8, 60>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 256, 8, 64>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 256, 16, 36>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 40>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 44>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 48>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 52>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 56>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 60>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 64>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 32, 36>
+            >;
+
             static constexpr auto getPerformanceHints(){
-                constexpr auto result = std::array{21486,22225,22598,22864,23136,23653,24032,
-                    23747,23134,22751,23014,23341,23393,23601,23659,23346,23272,22331,22731,
-                    22716,22834,22980,23256,22624,22714,22338,};
+                constexpr auto result = std::array{723,1539,2360,3144,3927,4708,5503,6274,6976,7745,
+                        8388,8690,8879,10021,10092,10393,10929,10932,11628,11323,11276,11626,11705,12036,
+                        11994,11370,12412,11952,12087,12197,12362,12445,11516,11853,12183,11997,12291,12627,
+                        12721,12639,11686};
 
                 static_assert(result.size() == std::tuple_size_v<type>);
 
@@ -217,149 +332,57 @@ LIBMARV_NAMESPACE_BEGIN
             }
         };
     
-                    
-        return std::make_unique<MultiConfigScoreOnlyAligner<SingleTileConfigs, MultiTileConfigs>>(AlignmentAlgorithmE::Gapless);
-    }
-
-#if 0
-    std::unique_ptr<MultiConfigScoreOnlyAlignerInterface> make_multiconfig_gapless_aligner_sm120_32bit(){
-        struct SingleTileConfigs{
-            using type = std::tuple<
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 4>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 6>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 8>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 10>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 12>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 14>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 16>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 18>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 2, 20>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 2, 22>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 2, 24>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 2, 26>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 2, 28>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 2, 30>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 2, 32>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 2, 34>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 2, 36>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 38>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 40>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 42>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 44>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 2, 46>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 48>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 50>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 52>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 54>,
-            
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 4, 28>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 58>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 4, 30>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 62>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 4, 32>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 4, 34>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 4, 36>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 4, 38>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 4, 40>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 4, 42>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 4, 44>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 4, 46>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 24>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 4, 50>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 26>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 4, 54>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 4, 56>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 4, 58>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 4, 60>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 4, 62>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 4, 64>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 8, 34>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 8, 36>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 8, 38>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 8, 40>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 8, 42>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 8, 44>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 128, 8, 46>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 16, 24>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 50>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 52>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 54>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 56>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 58>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 60>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 62>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 64>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 16, 34>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 16, 36>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 16, 38>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 20>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 42>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 22>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 46>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 24>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 50>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 26>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 16, 54>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 56>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 16, 58>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 256, 16, 60>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 62>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 64>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 34>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 36>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 38>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 40>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 42>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 44>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 46>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 48>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 50>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 52>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 54>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 56>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 58>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 60>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 62>,
-            GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 64>,
-            >;
-
-            // static constexpr auto getPerformanceHints(){
-            //     constexpr auto result = std::array{724,1133,1548,1953,2367,2766,3181,3593,3976,4354,4754,5199,
-            //         5589,5952,6375,6760,7038,6836,7451,7427,7988,8128,8861,8669,9281,9266,9861,9897,10479,10331,
-            //         10935,11524,11858,12107,12126,12115,12420,12499,12645,12333,12761,12527,13294,13105,13240,
-            //         12898,13851,13195,13493,13528,13310,13319,13521,13596,13544,13538,13714,13785,14809,14694,
-            //         14030,13802,13815,14131,14388,14457,14175,14013,14424,14293,14657,14611,14718,14639,14975,
-            //         15017,14938,14739,14692,13943,14350,14581,14582,14620,14790,15023,15119,15164,15230,15255,
-            //         15680,15336,15401,15650,15515,};
-
-            //     static_assert(result.size() == std::tuple_size_v<type>);
-
-            //     return result;
-            // };
-
-            static constexpr bool hasPerformanceHints(){
-                return false;
-            }
-        };
-    
         struct MultiTileConfigs{
             using type = std::tuple<
-                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 52>,
-                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 54>,
-                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 56>,
-                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 58>,
+                // GaplessConfig<21, Approach::unused, Datatype::Int, 512, 2, 4>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 8>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 12>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 16>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 20>,
+                // GaplessConfig<21, Approach::unused, Datatype::Int, 512, 2, 24>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 28>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 32>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 36>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 40>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 44>,
+                // GaplessConfig<21, Approach::unused, Datatype::Int, 512, 2, 48>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 52>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 56>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 2, 60>,
+                // GaplessConfig<21, Approach::unused, Datatype::Int, 512, 2, 64>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 4, 36>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 4, 40>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 4, 44>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 4, 48>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 4, 52>,
+                // GaplessConfig<21, Approach::unused, Datatype::Int, 512, 4, 56>,
+                // GaplessConfig<21, Approach::unused, Datatype::Float, 512, 4, 60>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 4, 64>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 36>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 40>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 44>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 8, 48>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 8, 52>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 8, 56>,
                 GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 60>,
-                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 62>,
-                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 8, 64>,
-                GaplessConfig<21, Approach::unused, Datatype::Float, 256, 16, 34>,
-                GaplessConfig<21, Approach::unused, Datatype::Float, 256, 16, 36>,
-                GaplessConfig<21, Approach::unused, Datatype::Float, 256, 16, 38>,
-                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 32, 20>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 8, 64>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 36>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 40>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 44>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 16, 48>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 16, 52>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 16, 56>,
+                GaplessConfig<21, Approach::unused, Datatype::Float, 512, 16, 60>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 16, 64>,
+                GaplessConfig<21, Approach::unused, Datatype::Int, 512, 32, 36>
             >;
 
 
             // static constexpr auto getPerformanceHints(){
-            //     constexpr auto result = std::array
+            //     constexpr auto result = std::array{762,1567,2381,3181,3825,4562,5236,5900,6665,
+            //             7219,7947,8397,9169,9581,9946,10181,10115,10603,11096,11133,11380,11549,11645,
+            //             11677,11137,11402,11785,11739,12054,11774,11782,12271,11240,11556,11851,11729,
+            //             11931,11946,11856,12170,11523};
 
             //     static_assert(result.size() == std::tuple_size_v<type>);
 
@@ -374,7 +397,6 @@ LIBMARV_NAMESPACE_BEGIN
                     
         return std::make_unique<MultiConfigScoreOnlyAligner<SingleTileConfigs, MultiTileConfigs>>(AlignmentAlgorithmE::Gapless);
     }
-#endif
 
     std::unique_ptr<MultiConfigScoreOnlyAlignerInterface> make_multiconfig_gapless_aligner_sm120_8bit_if_available_else_16bit(){
 
