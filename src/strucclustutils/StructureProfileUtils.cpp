@@ -150,8 +150,7 @@ void split3Di12StDb(const std::string &inputDb,
 }
 
 ResolvedStructureProfileDbs resolveStructureProfileDbs(LocalParameters &par,
-                                                       const std::string &db2NoIndexName,
-                                                       bool disableSs12Profile) {
+                                                       const std::string &db2NoIndexName) {
     ResolvedStructureProfileDbs resolved;
     resolved.ssInputDb = par.db1 + "_ss";
     resolved.ssTargetDb = db2NoIndexName + "_ss";
@@ -188,11 +187,6 @@ ResolvedStructureProfileDbs resolveStructureProfileDbs(LocalParameters &par,
         && resolved.ss12InputDb.empty()
         && FileUtil::fileExists((par.db1 + "_ss12.dbtype").c_str())) {
         resolved.ss12InputDb = par.db1 + "_ss12";
-    }
-
-    if (disableSs12Profile) {
-        resolved.ss12InputDb.clear();
-        resolved.ss12TargetDb.clear();
     }
 
     return resolved;

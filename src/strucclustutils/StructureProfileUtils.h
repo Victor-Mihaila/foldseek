@@ -14,8 +14,7 @@ struct ResolvedStructureProfileDbs {
 };
 
 ResolvedStructureProfileDbs resolveStructureProfileDbs(LocalParameters &par,
-                                                       const std::string &db2NoIndexName,
-                                                       bool disableSs12Profile);
+                                                       const std::string &db2NoIndexName);
 
 std::string createAaProfileParameters(LocalParameters &par);
 std::string create3DiProfileParameters(LocalParameters &par);

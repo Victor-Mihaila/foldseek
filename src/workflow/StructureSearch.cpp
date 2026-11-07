@@ -156,11 +156,6 @@ int structuresearch(int argc, const char **argv, const Command &command) {
     cmd.addVariable("REMOVE_TMP", par.removeTmpFiles ? "TRUE" : NULL);
     cmd.addVariable("RUNNER", par.runner.c_str());
     cmd.addVariable("VERBOSITY", par.createParameterString(par.onlyverbosity).c_str());
-    const char *ss12FirstOnlyEnv = std::getenv("FOLDSEEK_ITERATIVE_SS12_FIRST_ONLY");
-    const bool ss12FirstOnly = (ss12FirstOnlyEnv != NULL && ss12FirstOnlyEnv[0] != '\0' && ss12FirstOnlyEnv[0] != '0');
-    if (ss12FirstOnly) {
-        cmd.addVariable("SS12_ONLY_FIRST_IT", "1");
-    }
     std::string program;
     if(par.numIterations > 1 || par.numIterations == 0){
 	//par.evalProfile = 0.1;
@@ -194,19 +189,7 @@ int structuresearch(int argc, const char **argv, const Command &command) {
             }else if(par.alignmentType == LocalParameters::ALIGNMENT_TYPE_TMALIGN){
                 cmd.addVariable(std::string("ALIGNMENT_PAR_" + SSTR(i)).c_str(), par.createParameterString(par.tmalign).c_str());
             }else if(par.alignmentType == LocalParameters::ALIGNMENT_TYPE_3DI_AA){
-                const bool disable12StForThisIteration = ss12FirstOnly && i >= 1;
-                const bool savedSs12St = par.useAuxScoring;
-                const int savedEvalueNNMode = par.evalueNNMode;
-                const bool savedUseReverseScore = par.useReverseScore;
-                if (disable12StForThisIteration) {
-                    par.useAuxScoring = 0;
-                    par.evalueNNMode = LocalParameters::EVALUE_NN_MODE_3DI;
-                    par.useReverseScore = true;
-                }
                 cmd.addVariable(std::string("ALIGNMENT_PAR_" + SSTR(i)).c_str(), par.createParameterString(par.structurealign).c_str());
-                par.useAuxScoring = savedSs12St;
-                par.evalueNNMode = savedEvalueNNMode;
-                par.useReverseScore = savedUseReverseScore;
             }
         }
         if(par.clusterSearch == 1){

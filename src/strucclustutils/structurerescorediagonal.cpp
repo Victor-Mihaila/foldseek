@@ -553,6 +553,5 @@ int structureungappedalign(int argc, const char **argv, const Command& command) 
         delete q12StDbr;
     }
     delete subMat12St;
-    StructureUtil::reportProfileMasking("structureungappedalign");
     return EXIT_SUCCESS;
 }

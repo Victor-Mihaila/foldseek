@@ -724,6 +724,5 @@ int structurealign(int argc, const char **argv, const Command& command) {
         delete q12StDbr;
     }
 
-    StructureUtil::reportProfileMasking("structurealign");
     return EXIT_SUCCESS;
 }

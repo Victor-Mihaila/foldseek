@@ -9,9 +9,7 @@
 #include "Sequence.h"
 
 #include <vector>
-#include <atomic>
 #include "Debug.h"
-#include <cstdlib>
 #include <algorithm>
 
 class StructureUtil {
@@ -26,54 +24,32 @@ public:
     // neighbor found", so they encode the same lack-of-contact signal.
     // Masking the 12st character to 'X' at these positions removes the
     // redundancy.
+    static inline bool isRedundant12StPosition(char c3Di, char c12St) {
+        return (c3Di == 'D' || c3Di == 'V' || c3Di == 'P') && (c12St == 'G' || c12St == 'H' || c12St == 'I');
+    }
+
     static inline void mask12StSeqs(char *seq3Di, char *seq12St, size_t len, bool isQuery) {
         if (!isQuery) { // only mask the query sequence
             return;
         }
         for (size_t i = 0; i < len; i++) {
-            if ((seq3Di[i] == 'D' || seq3Di[i] == 'V' || seq3Di[i] == 'P') &&
-                (seq12St[i] == 'G' || seq12St[i] == 'H' || seq12St[i] == 'I')) {
+            if (isRedundant12StPosition(seq3Di[i], seq12St[i])) {
                 seq12St[i] = 'X';
             }
         }
     }
 
-    static inline bool profileMaskingEnabled() {
-        static const bool on = [] {
-            const char *v = std::getenv("FOLDSEEK_NO_PROFILE_MASK");
-            return !(v != NULL && v[0] != '\0' && v[0] != '0');
-        }();
-        return on;
-    }
-    static std::atomic<size_t> &profileMaskedPositions() { static std::atomic<size_t> v(0); return v; }
-    static std::atomic<size_t> &profileMaskTotalPositions() { static std::atomic<size_t> v(0); return v; }
-    static void reportProfileMasking(const char *tool) {
-        const size_t tot = profileMaskTotalPositions().load();
-        if (tot == 0) return;
-        const size_t m = profileMaskedPositions().load();
-        Debug(Debug::INFO) << tool << ": profile queries, 12st D/V/P x G/H/I mask on " << m << " of " << tot
-                           << " positions (" << (100.0 * m / tot) << "%)\n";
-    }
-    static inline size_t mask12StProfile(const Sequence &q3Di, Sequence &q12St) {
-        if (!profileMaskingEnabled()) {
-            return 0;
-        }
+    // profile counterpart of mask12StSeqs: zero the 12st profile column at the same positions
+    static inline void mask12StProfile(const Sequence &q3Di, Sequence &q12St) {
         const int L = std::min(q3Di.L, q12St.L);
         const int alph = q12St.subMat->alphabetSize;
-        size_t masked = 0;
         for (int i = 0; i < L; i++) {
-            const char c3 = q3Di.subMat->num2aa[q3Di.numSequence[i]];
-            const char c12 = q12St.subMat->num2aa[q12St.numSequence[i]];
-            if ((c3 == 'D' || c3 == 'V' || c3 == 'P') && (c12 == 'G' || c12 == 'H' || c12 == 'I')) {
+            if (isRedundant12StPosition(q3Di.subMat->num2aa[q3Di.numSequence[i]], q12St.subMat->num2aa[q12St.numSequence[i]])) {
                 for (int a = 0; a < alph; a++) {
                     q12St.profile_for_alignment[(size_t) a * q12St.L + i] = 0;
                 }
-                masked++;
             }
         }
-        profileMaskedPositions() += masked;
-        profileMaskTotalPositions() += (size_t) L;
-        return masked;
     }
 
     static inline void split3Di12St(const char *src, size_t len,

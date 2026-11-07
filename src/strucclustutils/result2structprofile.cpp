@@ -31,11 +31,7 @@ int result2structprofile(int argc, const char **argv, const Command &command) {
     CommandCaller cmd;
     const std::string db2NoIndexName = PrefilteringIndexReader::dbPathWithoutIndex(par.db2);
 
-    const char *disableSs12ProfileEnv = std::getenv("FOLDSEEK_DISABLE_SS12_PROFILE");
-    const bool disableSs12Profile = (disableSs12ProfileEnv != NULL
-                                     && disableSs12ProfileEnv[0] != '\0'
-                                     && disableSs12ProfileEnv[0] != '0');
-    const ResolvedStructureProfileDbs resolved = resolveStructureProfileDbs(par, db2NoIndexName, disableSs12Profile);
+    const ResolvedStructureProfileDbs resolved = resolveStructureProfileDbs(par, db2NoIndexName);
 
     if (FileUtil::fileExists((par.db1 + ".dbtype").c_str())) {
         cmd.addVariable("PROFILE_PAR", createAaProfileParameters(par).c_str());

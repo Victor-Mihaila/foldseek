@@ -143,15 +143,9 @@ while [ "$STEP" -lt "$NUM_IT" ]; do
     # create profiles
     if [ $STEP -ne $((NUM_IT - 1)) ]; then
         if notExists "$TMP_PATH/profile_${STEP}.dbtype"; then
-            if [ -n "$SS12_ONLY_FIRST_IT" ]; then
-                # shellcheck disable=SC2086
-                FOLDSEEK_DISABLE_SS12_PROFILE=1 "$MMSEQS" result2profile "${QUERYDB}" "${TARGET_ALIGNMENT}${INDEXEXT}" "$TMP_PATH/aln_${STEP}" "$TMP_PATH/profile_${STEP}" ${VERBOSITY_THREADS_PAR} ${PROFILE_EVAL} \
-                    || fail "Create profile died"
-            else
-                # shellcheck disable=SC2086
-                "$MMSEQS" result2profile "${QUERYDB}" "${TARGET_ALIGNMENT}${INDEXEXT}" "$TMP_PATH/aln_${STEP}" "$TMP_PATH/profile_${STEP}" ${VERBOSITY_THREADS_PAR} ${PROFILE_EVAL} \
-                    || fail "Create profile died"
-            fi
+            # shellcheck disable=SC2086
+            "$MMSEQS" result2profile "${QUERYDB}" "${TARGET_ALIGNMENT}${INDEXEXT}" "$TMP_PATH/aln_${STEP}" "$TMP_PATH/profile_${STEP}" ${VERBOSITY_THREADS_PAR} ${PROFILE_EVAL} \
+                || fail "Create profile died"
         fi
     fi
 	QUERYDB="$TMP_PATH/profile_${STEP}"
