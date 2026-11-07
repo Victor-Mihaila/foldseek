@@ -432,7 +432,6 @@ LocalParameters::LocalParameters() :
     maskNrepeats = 6;
     maskProb = 0.999995;
     maskLowerCaseMode = 1;
-    maskProfile = 0;
 
     // createdb
     maskBfactorThreshold = 0;

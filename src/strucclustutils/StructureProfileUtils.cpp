@@ -205,7 +205,7 @@ std::string createAaProfileParameters(LocalParameters &par) {
                                    MultiParam<PseudoCounts>(PseudoCounts(4.1, 5.8)),
                                    1,
                                    1.0f,
-                                   par.maskProfile,
+                                   par.PARAM_MASK_PROFILE.wasSet ? par.maskProfile : 1,
                                    0.9f,
                                    0.001,
                                    true,
