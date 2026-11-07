@@ -23,10 +23,14 @@ namespace b64 {
 }
 #include "marv.h"
 
+struct FoldseekSearchCache;
+
 // score-only search workspace retained between calls, owned by the Marv instance
 struct SearchWorkspaceCache {
     std::unique_ptr<libmarv::ScoreOnlySearch> search;
     size_t maxBytes = 0;
+    // aligners and search state of the Foldseek search (one call per query batch)
+    std::shared_ptr<FoldseekSearchCache> foldseek;
 
     std::unique_ptr<libmarv::ScoreOnlySearch> acquire(libmarv::GpuDatabase& db, int outputSize, int topN, int queries) {
         const int effectiveOutput = int(std::min(size_t(outputSize), std::max(size_t(1), db.getNumSequences())));
@@ -370,7 +374,98 @@ libmarv::SearchResult do_search_scoreEndpos_impl(
 }
 
 
+#if !(defined(__METAL_BACKEND__) || defined(__SIMD_BACKEND__))
+struct FoldseekSearchCache {
+    libmarv::GpuDatabase* gpuDatabase = nullptr;
+    int topNSize = -1;
+    int maxNumQueries = 0;
+    int kernelOutputArraySize = 0;
+    bool int8IsAllowed = false;
+    bool handleOverflows = false;
+
+    std::vector<std::unique_ptr<libmarv::MultiConfigScoreOnlyAlignerInterface>> scoreOnlyAligners;
+    std::vector<std::unique_ptr<libmarv::MultiConfigScoreOnlyAlignerInterface>> overflowAligners;
+    std::vector<std::unique_ptr<libmarv::MultiConfigScoreWithEndPosAlignerInterface>> endposAligners;
+    std::vector<std::unique_ptr<libmarv::MultiConfigScoreWithEndPosAlignerInterface>> overflowEndposAligners;
+    std::vector<libmarv::MultiConfigScoreOnlyAlignerInterface*> scoreOnlyAlignerPtrs;
+    std::vector<libmarv::MultiConfigScoreOnlyAlignerInterface*> overflowAlignerPtrs;
+    std::vector<libmarv::MultiConfigScoreWithEndPosAlignerInterface*> endposAlignerPtrs;
+    std::vector<libmarv::MultiConfigScoreWithEndPosAlignerInterface*> overflowEndposAlignerPtrs;
+
+    std::unique_ptr<libmarv::ScoreOnlyFoldseekSearch> search;
+
+    ~FoldseekSearchCache() {
+        search.reset();
+        const std::vector<int>& deviceIds = gpuDatabase->getDeviceIds();
+        for (size_t i = 0; i < deviceIds.size(); i++) {
+            CUDACHECK(cudaSetDevice(deviceIds[i]));
+            scoreOnlyAligners[i].reset();
+            overflowAligners[i].reset();
+            endposAligners[i].reset();
+            overflowEndposAligners[i].reset();
+        }
+    }
+};
+
+FoldseekSearchCache& getFoldseekSearchCache(
+    SearchWorkspaceCache& workspaceCache,
+    libmarv::GpuDatabase& gpuDatabase,
+    int topNSize,
+    int numQueries,
+    bool int8IsAllowed,
+    bool handleOverflows
+){
+    const int kernelOutputArraySize = (int)std::min<size_t>(10'000'000, gpuDatabase.getNumSequences());
+    std::shared_ptr<FoldseekSearchCache>& entry = workspaceCache.foldseek;
+    if (entry != nullptr
+        && entry->gpuDatabase == &gpuDatabase
+        && entry->topNSize == topNSize
+        && entry->maxNumQueries >= numQueries
+        && entry->kernelOutputArraySize == kernelOutputArraySize
+        && entry->int8IsAllowed == int8IsAllowed
+        && entry->handleOverflows == handleOverflows) {
+        return *entry;
+    }
+    entry.reset();
+
+    const std::vector<int>& deviceIds = gpuDatabase.getDeviceIds();
+    std::shared_ptr<FoldseekSearchCache> cache = std::make_shared<FoldseekSearchCache>();
+    cache->gpuDatabase = &gpuDatabase;
+    cache->topNSize = topNSize;
+    cache->maxNumQueries = numQueries;
+    cache->kernelOutputArraySize = kernelOutputArraySize;
+    cache->int8IsAllowed = int8IsAllowed;
+    cache->handleOverflows = handleOverflows;
+
+    for (size_t i = 0; i < deviceIds.size(); i++) {
+        CUDACHECK(cudaSetDevice(deviceIds[i]));
+        if (int8IsAllowed) {
+            cache->scoreOnlyAligners.emplace_back(libmarv::make_multiconfig_gapless_aligner_8bit());
+            cache->overflowAligners.emplace_back(libmarv::make_multiconfig_gapless_aligner_16bit());
+        } else {
+            cache->scoreOnlyAligners.emplace_back(libmarv::make_multiconfig_gapless_aligner_16bit());
+            cache->overflowAligners.emplace_back(libmarv::make_multiconfig_gapless_aligner_32bit());
+        }
+        cache->endposAligners.emplace_back(libmarv::make_multiconfig_gapless_endpos_aligner_16bit());
+        cache->overflowEndposAligners.emplace_back(libmarv::make_multiconfig_gapless_endpos_aligner_32bit());
+        cache->scoreOnlyAlignerPtrs.push_back(cache->scoreOnlyAligners.back().get());
+        cache->overflowAlignerPtrs.push_back(cache->overflowAligners.back().get());
+        cache->endposAlignerPtrs.push_back(cache->endposAligners.back().get());
+        cache->overflowEndposAlignerPtrs.push_back(cache->overflowEndposAligners.back().get());
+    }
+
+    constexpr bool isAA20dbTesting = false;
+    cache->search = std::make_unique<libmarv::ScoreOnlyFoldseekSearch>(
+        isAA20dbTesting, gpuDatabase, kernelOutputArraySize, topNSize, numQueries);
+
+    entry = std::move(cache);
+    return *entry;
+}
+
+#endif
+
 std::vector<libmarv::SearchResult> do_search_scoreOnly_foldseek_impl(
+    SearchWorkspaceCache& workspaceCache,
     libmarv::GpuDatabase& gpuDatabase, 
     const std::vector<int>& queryLengths,
     const std::vector<int8_t*>& queryPssms_3di,
@@ -383,62 +478,14 @@ std::vector<libmarv::SearchResult> do_search_scoreOnly_foldseek_impl(
 #if defined(__METAL_BACKEND__) || defined(__SIMD_BACKEND__)
     throw std::runtime_error("libmarv/Metal: the Foldseek search is not implemented on the Metal backend");
 #else
-    const std::vector<int>& deviceIds = gpuDatabase.getDeviceIds();
-
-    std::vector<cudaStream_t> streams{cudaStreamPerThread};
-    cuda::std::span<cudaStream_t> streamsSpan(streams.data(), streams.size());
-
     assert(queryPssms_3di.size() == queryPssms_aa12.size());
     const int numQueries = queryPssms_3di.size();
-    const int numGpus = deviceIds.size();
 
-    std::vector<std::unique_ptr<libmarv::MultiConfigScoreOnlyAlignerInterface>> scoreOnlyAlignerVector;
-    std::vector<libmarv::MultiConfigScoreOnlyAlignerInterface*> scoreOnlyAlignerPtrVector;    
-    for(int i = 0; i < numGpus; i++){
-        CUDACHECK(cudaSetDevice(deviceIds[i]));
-        if(int8IsAllowed){
-            scoreOnlyAlignerVector.emplace_back(libmarv::make_multiconfig_gapless_aligner_8bit());
-        }else{
-            scoreOnlyAlignerVector.emplace_back(libmarv::make_multiconfig_gapless_aligner_16bit());
-        }
-        scoreOnlyAlignerPtrVector.push_back(scoreOnlyAlignerVector.back().get());
-    }
-    cuda::std::span<libmarv::MultiConfigScoreOnlyAlignerInterface*> alignerSpan(scoreOnlyAlignerPtrVector.data(), scoreOnlyAlignerPtrVector.size());
-
-
-    std::optional<cuda::std::span<libmarv::MultiConfigScoreOnlyAlignerInterface*>> overflowAlignerSpan_optional = std::nullopt;
-
-    std::vector<std::unique_ptr<libmarv::MultiConfigScoreOnlyAlignerInterface>> overflowAlignerVector;
-    std::vector<libmarv::MultiConfigScoreOnlyAlignerInterface*> overflowAlignerPtrVector;    
-    for(int i = 0; i < numGpus; i++){
-        CUDACHECK(cudaSetDevice(deviceIds[i]));
-        if(int8IsAllowed){
-            overflowAlignerVector.emplace_back(libmarv::make_multiconfig_gapless_aligner_16bit());
-        }else{
-            overflowAlignerVector.emplace_back(libmarv::make_multiconfig_gapless_aligner_32bit());
-        }
-        overflowAlignerPtrVector.push_back(overflowAlignerVector.back().get());
-    }
-    overflowAlignerSpan_optional = cuda::std::span<libmarv::MultiConfigScoreOnlyAlignerInterface*>(overflowAlignerPtrVector.data(), overflowAlignerPtrVector.size());
-
-
-    std::vector<std::unique_ptr<libmarv::MultiConfigScoreWithEndPosAlignerInterface>> scoreEndposAlignerVector;
-    std::vector<libmarv::MultiConfigScoreWithEndPosAlignerInterface*> scoreEndposAlignerPtrVector;    
-    for(int i = 0; i < numGpus; i++){
-        CUDACHECK(cudaSetDevice(deviceIds[i]));
-        scoreEndposAlignerVector.emplace_back(libmarv::make_multiconfig_gapless_endpos_aligner_16bit());
-        scoreEndposAlignerPtrVector.emplace_back(scoreEndposAlignerVector.back().get());
-    }
-    cuda::std::span<libmarv::MultiConfigScoreWithEndPosAlignerInterface*> alignerEndposSpan(scoreEndposAlignerPtrVector.data(), scoreEndposAlignerPtrVector.size());
-
-    std::vector<std::unique_ptr<libmarv::MultiConfigScoreWithEndPosAlignerInterface>> overflowEndposAlignerVector;
-    std::vector<libmarv::MultiConfigScoreWithEndPosAlignerInterface*> overflowEndposAlignerPtrVector;
-    for(int i = 0; i < numGpus; i++){
-        CUDACHECK(cudaSetDevice(deviceIds[i]));
-        overflowEndposAlignerVector.emplace_back(libmarv::make_multiconfig_gapless_endpos_aligner_32bit());
-        overflowEndposAlignerPtrVector.emplace_back(overflowEndposAlignerVector.back().get());
-    }
-    cuda::std::span<libmarv::MultiConfigScoreWithEndPosAlignerInterface*> overflowEndposSpan(overflowEndposAlignerPtrVector.data(), overflowEndposAlignerPtrVector.size());
+    FoldseekSearchCache& cache = getFoldseekSearchCache(workspaceCache, gpuDatabase, topNSize, numQueries, int8IsAllowed, handleOverflows);
+    cuda::std::span<libmarv::MultiConfigScoreOnlyAlignerInterface*> alignerSpan(cache.scoreOnlyAlignerPtrs.data(), cache.scoreOnlyAlignerPtrs.size());
+    cuda::std::span<libmarv::MultiConfigScoreOnlyAlignerInterface*> overflowAlignerSpan(cache.overflowAlignerPtrs.data(), cache.overflowAlignerPtrs.size());
+    cuda::std::span<libmarv::MultiConfigScoreWithEndPosAlignerInterface*> alignerEndposSpan(cache.endposAlignerPtrs.data(), cache.endposAlignerPtrs.size());
+    cuda::std::span<libmarv::MultiConfigScoreWithEndPosAlignerInterface*> overflowEndposSpan(cache.overflowEndposAlignerPtrs.data(), cache.overflowEndposAlignerPtrs.size());
 
     std::vector<cuda::std::mdspan<std::int8_t, cuda::std::dextents<int,2>>> queryPssmViews_3di;
     std::vector<cuda::std::mdspan<std::int8_t, cuda::std::dextents<int,2>>> queryPssmViews_aa12;
@@ -450,18 +497,15 @@ std::vector<libmarv::SearchResult> do_search_scoreOnly_foldseek_impl(
         queryPssmViews_aa12.emplace_back(queryPssms_aa12[queryIndex], 12, queryLength);
     }
 
-    constexpr int kernelOutputArraySize = 10'000'000;
-    constexpr bool isAA20dbTesting = false;
-    libmarv::ScoreOnlyFoldseekSearch scoreOnlyFoldseekSearch(isAA20dbTesting, gpuDatabase, kernelOutputArraySize, topNSize, numQueries);
 
     auto overflowSettings = libmarv::OverflowSettings::withoutOverflowCorrection();
     if(handleOverflows){
-        overflowSettings = libmarv::OverflowSettings::withOverflowCorrection(overflowAlignerSpan_optional.value());
+        overflowSettings = libmarv::OverflowSettings::withOverflowCorrection(overflowAlignerSpan);
     }
 
     auto endposOverflowSettings = libmarv::OverflowSettings::withOverflowCorrection(overflowEndposSpan);
 
-    auto searchResultPerQuery = scoreOnlyFoldseekSearch.execute(
+    auto searchResultPerQuery = cache.search->execute(
         alignerSpan, 
         overflowSettings,
         alignerEndposSpan,
@@ -477,6 +521,7 @@ std::vector<libmarv::SearchResult> do_search_scoreOnly_foldseek_impl(
 }
 
 libmarv::SearchResult do_search_scoreOnly_foldseek_impl(
+    SearchWorkspaceCache& workspaceCache,
     libmarv::GpuDatabase& gpuDatabase, 
     int queryLength,
     int8_t* queryPssm_3di,
@@ -487,6 +532,7 @@ libmarv::SearchResult do_search_scoreOnly_foldseek_impl(
     bool handleOverflows
 ){
     auto resultvector = do_search_scoreOnly_foldseek_impl(
+        workspaceCache,
         gpuDatabase, 
         std::vector<int>{queryLength}, 
         std::vector<int8_t*>{queryPssm_3di}, 
@@ -548,12 +594,12 @@ std::vector<std::shared_ptr<libmarv::GpuDatabaseAllocationBase>> allocations_all
 Marv::~Marv() {
     allocations_all.clear();
     delete static_cast<SearchWorkspaceCache*>(searchWorkspaceVoidPtr);
-    libmarv::GpuDatabase* gpuDatabase = static_cast<libmarv::GpuDatabase*>(gpuDatabaseVoidPtr);
-    delete gpuDatabase;
+    delete static_cast<libmarv::GpuDatabase*>(gpuDatabaseVoidPtr);
 }
 
 void Marv::releaseSearchWorkspace() {
     static_cast<SearchWorkspaceCache*>(searchWorkspaceVoidPtr)->search.reset();
+    static_cast<SearchWorkspaceCache*>(searchWorkspaceVoidPtr)->foldseek.reset();
 }
 
 std::vector<int> Marv::getDeviceIds() {
@@ -631,6 +677,7 @@ void Marv::setDbWithAllocation(void* dbhandle, const std::string& allocationinfo
     libmarv::GpuDatabase* gpuDatabase = static_cast<libmarv::GpuDatabase*>(gpuDatabaseVoidPtr);
     // OpaqueAllocationManager* manager = static_cast<OpaqueAllocationManager*>(allocationhandle);
     static_cast<SearchWorkspaceCache*>(searchWorkspaceVoidPtr)->search.reset();
+    static_cast<SearchWorkspaceCache*>(searchWorkspaceVoidPtr)->foldseek.reset();
     gpuDatabase->setDatabase(dbPtr, allocations_remote);
 }
 
@@ -640,6 +687,7 @@ void Marv::setDb(void* dbhandle) {
     std::shared_ptr<libmarv::MMseqsDB> dbPtr(static_cast<libmarv::MMseqsDB*>(db), doNothingDeleter);
     libmarv::GpuDatabase* gpuDatabase = static_cast<libmarv::GpuDatabase*>(gpuDatabaseVoidPtr);
     static_cast<SearchWorkspaceCache*>(searchWorkspaceVoidPtr)->search.reset();
+    static_cast<SearchWorkspaceCache*>(searchWorkspaceVoidPtr)->foldseek.reset();
     gpuDatabase->setDatabase(dbPtr);
 }
 
@@ -1007,6 +1055,7 @@ std::vector<Marv::Stats> Marv::search_scoreOnly_foldseek(
     const int numQueries = queryLengths.size();
 
     auto searchResultPerQuery = do_search_scoreOnly_foldseek_impl(
+        *static_cast<SearchWorkspaceCache*>(searchWorkspaceVoidPtr),
         *gpuDatabase,
         queryLengths,
         queryPssms_3di,

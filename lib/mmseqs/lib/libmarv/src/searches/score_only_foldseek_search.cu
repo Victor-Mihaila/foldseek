@@ -785,7 +785,7 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
 
                                 if(numOverflows > 0){
                                     CUDACHECK(cudaSetDevice(callbackInput[gpu].deviceId));
-                                    cudaStream_t stream = streamsPerGpuPerQuery[gpu * numQueries + queryIndex];
+                                    cudaStream_t stream = streamsPerGpuPerQuery[gpu * maxNumQueries + queryIndex];
 
                                     auto& ws = *workingSets[gpu];
 
@@ -845,7 +845,7 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
                                     //     cuda::std::plus<int>{}
                                     // );
 
-                                    // cudaStream_t alignmentStream = streamsPerGpuPerQuery[gpu * numQueries + queryIndex];
+                                    // cudaStream_t alignmentStream = streamsPerGpuPerQuery[gpu * maxNumQueries + queryIndex];
                                     // CUDACHECK(cudaEventRecord(ws.forkStreamEvent, stream));
                                     // CUDACHECK(cudaStreamWaitEvent(alignmentStream, ws.forkStreamEvent, 0));
 
@@ -910,7 +910,7 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
                             CUDACHECK(cudaSetDevice(deviceIds[gpu]));
                             auto& ws = *workingSets[gpu];
                             cudaStream_t stream = cudaStreamPerThread;
-                            cudaStream_t alignmentStream = streamsPerGpuPerQuery[gpu * numQueries + queryIndex];
+                            cudaStream_t alignmentStream = streamsPerGpuPerQuery[gpu * maxNumQueries + queryIndex];
                             CUDACHECK(cudaEventRecord(ws.forkStreamEvent, alignmentStream));
                             CUDACHECK(cudaStreamWaitEvent(stream, ws.forkStreamEvent, 0));
                         }
