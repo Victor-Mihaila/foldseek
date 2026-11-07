@@ -18,26 +18,6 @@
 #include <omp.h>
 #endif
 #include <memory>
-#include <cstdio>
-#include <cstdlib>
-
-namespace {
-bool structureTraceEnabled() {
-    static const bool enabled = []() {
-        const char *value = std::getenv("FOLDSEEK_TRACE_PROFILE12");
-        return value != NULL && value[0] != '\0' && value[0] != '0';
-    }();
-    return enabled;
-}
-}
-
-#define TRACE_STRUCTURE(...) \
-    do { \
-        if (structureTraceEnabled()) { \
-            std::fprintf(stderr, __VA_ARGS__); \
-            std::fflush(stderr); \
-        } \
-    } while (0)
 
 // need for sorting the     results
 static bool compareHitsByStructureBits(const Matcher::result_t &first, const Matcher::result_t &second) {
@@ -58,7 +38,6 @@ static void structureAlignDefault(LocalParameters & par) {
 
 int alignStructure(StructureSmithWaterman & structureSmithWaterman,
                    StructureSmithWaterman & reverseStructureSmithWaterman,
-                   Sequence & qSeq3Di,
                    Sequence & tSeqAA, Sequence & tSeq3Di,
                    Sequence * tSeq12St,
                    unsigned int querySeqLen, unsigned int targetSeqLen,
@@ -70,20 +49,9 @@ int alignStructure(StructureSmithWaterman & structureSmithWaterman,
     float seqId = 0.0;
     backtrace.clear();
     const unsigned char *db12StSeq = (tSeq12St != NULL) ? tSeq12St->numSequence : NULL;
-    if (structureSmithWaterman.isProfileSearch() && db12StSeq != NULL) {
-        TRACE_STRUCTURE("[trace] alignStructure enter qLen=%u tLen=%u db12First=%d aaFirst=%d diFirst=%d\n",
-                        querySeqLen, targetSeqLen,
-                        static_cast<int>(db12StSeq[0]),
-                        targetSeqLen > 0 ? static_cast<int>(tSeqAA.numSequence[0]) : -1,
-                        targetSeqLen > 0 ? static_cast<int>(tSeq3Di.numSequence[0]) : -1);
-    }
     // align only score and end pos
     StructureSmithWaterman::s_align align = structureSmithWaterman.alignScoreEndPos<StructureSmithWaterman::PROFILE>(tSeqAA.numSequence, tSeq3Di.numSequence, targetSeqLen, par.gapOpen.values.aminoacid(),
                                                                                     par.gapExtend.values.aminoacid(), querySeqLen / 2, db12StSeq);
-    if (structureSmithWaterman.isProfileSearch() && db12StSeq != NULL) {
-        TRACE_STRUCTURE("[trace] alignScoreEndPos done score=%u qEnd=%d tEnd=%d\n",
-                        align.score1, align.qEndPos1, align.dbEndPos1);
-    }
     bool hasLowerCoverage = !(Util::hasCoverage(par.covThr, par.covMode, align.qCov, align.tCov));
     if(hasLowerCoverage){
         return -1;
@@ -130,10 +98,6 @@ int alignStructure(StructureSmithWaterman & structureSmithWaterman,
     }
 
     if (blockAlignFailed || structureSmithWaterman.isProfileSearch()) {
-        if (structureSmithWaterman.isProfileSearch() && db12StSeq != NULL) {
-            TRACE_STRUCTURE("[trace] before alignStartPosBacktrace score=%d qEnd=%d tEnd=%d\n",
-                            score, align.qEndPos1, align.dbEndPos1);
-        }
         align = structureSmithWaterman.alignStartPosBacktrace<StructureSmithWaterman::PROFILE>(tSeqAA.numSequence,
                                                                                                tSeq3Di.numSequence,
                                                                                                targetSeqLen,
@@ -144,11 +108,6 @@ int alignStructure(StructureSmithWaterman & structureSmithWaterman,
                                                                                                par.covMode, par.covThr,
                                                                                                querySeqLen / 2,
                                                                                                db12StSeq);
-        if (structureSmithWaterman.isProfileSearch() && db12StSeq != NULL) {
-            TRACE_STRUCTURE("[trace] after alignStartPosBacktrace score=%u qStart=%d qEnd=%d tStart=%d tEnd=%d bt=%zu\n",
-                            align.score1, align.qStartPos1, align.qEndPos1,
-                            align.dbStartPos1, align.dbEndPos1, backtrace.size());
-        }
     }
 
     unsigned int alnLength = Matcher::computeAlnLength(align.qStartPos1, align.qEndPos1, align.dbStartPos1, align.dbEndPos1);
@@ -165,7 +124,6 @@ int alignStructure(StructureSmithWaterman & structureSmithWaterman,
 
 int computeAlternativeAlignment(StructureSmithWaterman & structureSmithWaterman,
                                 StructureSmithWaterman & reverseStructureSmithWaterman,
-                                Sequence & qSeq3Di,
                                 Sequence & tSeqAA, Sequence & tSeq3Di,
                                 Sequence * tSeq12St,
                                 unsigned int querySeqLen, unsigned int targetSeqLen,
@@ -183,7 +141,6 @@ int computeAlternativeAlignment(StructureSmithWaterman & structureSmithWaterman,
         }
     }
     if (alignStructure(structureSmithWaterman, reverseStructureSmithWaterman,
-                       qSeq3Di,
                        tSeqAA, tSeq3Di, tSeq12St, querySeqLen, targetSeqLen,
                        evaluer, queryMuLambda, targetMuLambda, altRes, backtrace, par, useReverseScore) == -1) {
         return -1;
@@ -528,25 +485,9 @@ int structurealign(int argc, const char **argv, const Command& command) {
                 std::pair<double, double> muLambda = evaluer.uses12StModel()
                     ? evaluer.predictMuLambda12St(qSeq3Di, *qSeq12StForEvalue)
                     : evaluer.predictMuLambda(qSeq3Di.numSequence, qSeq3Di.L);
-                if (use12StScoring && structureSmithWaterman.isProfileSearch() == false &&
-                    q12StDbr != NULL &&
-                    Parameters::isEqualDbtype(q12StDbr->getDbtype(), Parameters::DBTYPE_HMM_PROFILE)) {
-                    TRACE_STRUCTURE("[trace] profile-query setup qKey=%u qLen=%u q3diType=%d q12Type=%d target12=%d\n",
-                                    static_cast<unsigned int>(queryKey), querySeqLen,
-                                    qSeq3Di.getSequenceType(),
-                                    qSeq12St ? qSeq12St->getSequenceType() : -1,
-                                    target3Di12St ? 1 : 0);
-                }
                 structureSmithWaterman.ssw_init(&qSeqAA, &qSeq3Di, tinySubMatAA, tinySubMat3Di, &subMatAA,
                                                use12StScoring ? qSeq12St.get() : NULL, use12StScoring ? tinySubMat12St : NULL,
                                                use12StScoring ? static_cast<const BaseMatrix *>(subMat12St) : NULL);
-                if (use12StScoring && structureSmithWaterman.isProfileSearch()) {
-                    TRACE_STRUCTURE("[trace] after ssw_init qKey=%u profileSearch=%d qLen=%d q12Len=%d\n",
-                                    static_cast<unsigned int>(queryKey),
-                                    structureSmithWaterman.isProfileSearch() ? 1 : 0,
-                                    qSeq3Di.L,
-                                    qSeq12St ? qSeq12St->L : -1);
-                }
                 const bool useReverseScoreForThisQuery = par.useReverseScore;
                 if (useReverseScoreForThisQuery) {
                     qSeq3Di.reverse();
@@ -597,15 +538,8 @@ int structurealign(int argc, const char **argv, const Command& command) {
                         targetMuLambda = evaluer.predictMuLambda12St(tSeq3Di, *tSeq12St);
                         targetMuLambdaPtr = &targetMuLambda;
                     }
-                    if (use12StScoring && structureSmithWaterman.isProfileSearch() && passedNum == 0) {
-                        TRACE_STRUCTURE("[trace] first target qKey=%u tKey=%u qLen=%u tLen=%d t12Len=%d t12First=%d\n",
-                                        static_cast<unsigned int>(queryKey), dbKey, querySeqLen, targetSeqLen,
-                                        tSeq12St ? tSeq12St->L : -1,
-                                        (tSeq12St && tSeq12St->L > 0) ? static_cast<int>(tSeq12St->numSequence[0]) : -1);
-                    }
                     Matcher::result_t res;
                     if(alignStructure(structureSmithWaterman, reverseStructureSmithWaterman,
-                                      qSeq3Di,
                                       tSeqAA, tSeq3Di, use12StScoring ? tSeq12St.get() : NULL,
                                       querySeqLen, targetSeqLen,
                                       evaluer, muLambda, targetMuLambdaPtr, res, backtrace, par, par.useReverseScore) == -1){
@@ -657,7 +591,6 @@ int structurealign(int argc, const char **argv, const Command& command) {
                         while(altAli && moreAltAli){
                             Matcher::result_t altRes;
                             if(computeAlternativeAlignment(structureSmithWaterman, reverseStructureSmithWaterman,
-                                                           qSeq3Di,
                                                            tSeqAA, tSeq3Di, use12StScoring ? tSeq12St.get() : NULL,
                                                            querySeqLen, targetSeqLen,
                                                            evaluer, muLambda, targetMuLambdaPtr, res, altRes,

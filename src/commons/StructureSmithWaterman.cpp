@@ -32,26 +32,7 @@ SOFTWARE.
 #include "UngappedAlignment.h"
 #include "../strucclustutils/EvalueNeuralNet.h"
 #include "block_aligner.h"
-#include <cstdlib>
 #include <iostream>
-
-namespace {
-bool structureTraceEnabled() {
-    static const bool enabled = []() {
-        const char *value = std::getenv("FOLDSEEK_TRACE_PROFILE12");
-        return value != NULL && value[0] != '\0' && value[0] != '0';
-    }();
-    return enabled;
-}
-}
-
-#define TRACE_STRUCTURE(...) \
-    do { \
-        if (structureTraceEnabled()) { \
-            std::fprintf(stderr, __VA_ARGS__); \
-            std::fflush(stderr); \
-        } \
-    } while (0)
 
 StructureSmithWaterman::StructureSmithWaterman(size_t maxSequenceLength, int aaSize,
                                                bool aaBiasCorrection, float aaBiasCorrectionScale,
@@ -743,18 +724,13 @@ StructureSmithWaterman::s_align StructureSmithWaterman::alignStartPosBacktrace (
         }
     } else if (r.word == 1) {
         if (profile->isProfile) {
-            TRACE_STRUCTURE("[trace] backtrace word/profile queryOffset=%d qEnd=%d dbEnd=%d has12=%d\n",
-                            queryOffset, r.qEndPos1, r.dbEndPos1, profile->has12St ? 1 : 0);
             createQueryProfile<int16_t, VECSIZE_INT * 2, profile_type>(profile->profile_aa_rev_word,profile->query_aa_rev_sequence,NULL,profile->rev_alignment_aa_profile,
                                                                       r.qEndPos1 + 1, profile->alphabetSize, 0,queryOffset, profile->query_length);
             createQueryProfile<int16_t, VECSIZE_INT * 2, profile_type>(profile->profile_3di_rev_word,profile->query_3di_rev_sequence,NULL,profile->rev_alignment_3di_profile,
                                                                       r.qEndPos1 + 1, profile->alphabetSize, 0,queryOffset, profile->query_length);
             if (profile->has12St) {
-                TRACE_STRUCTURE("[trace] before rev 12st query profile qLen=%d alphabet=%d\n",
-                                profile->query_length, profile->alphabetSize);
                 createQueryProfile<int16_t, VECSIZE_INT * 2, profile_type>(profile->profile_12st_rev_word, profile->query_12st_rev_sequence, NULL, profile->rev_alignment_12st_profile,
                                                                           r.qEndPos1 + 1, profile->alphabetSize, 0, queryOffset, profile->query_length);
-                TRACE_STRUCTURE("[trace] after rev 12st query profile\n");
             }
 #ifdef GAP_POS_SCORING
             createGapProfile<int16_t, VECSIZE_INT * 2>(profile->profile_gDelOpen_rev_word,
@@ -764,7 +740,6 @@ StructureSmithWaterman::s_align StructureSmithWaterman::alignStartPosBacktrace (
                                                        profile->query_length, queryOffset);
 #endif
             if (profile->has12St) {
-                TRACE_STRUCTURE("[trace] before reverse sw word 12st\n");
                 bests_reverse = sw_sse2_word<profile_type, true>(db_aa_sequence, db_3di_sequence, 1, r.dbEndPos1 + 1, r.qEndPos1 + 1,
                                                       gap_open, gap_extend,
 #ifdef GAP_POS_SCORING
@@ -772,8 +747,6 @@ StructureSmithWaterman::s_align StructureSmithWaterman::alignStartPosBacktrace (
 #endif
                                                       profile->profile_aa_rev_word, profile->profile_3di_rev_word,
                                                       r.score1, maskLen, db_12st_sequence, profile->profile_12st_rev_word);
-                TRACE_STRUCTURE("[trace] after reverse sw word 12st score=%u ref=%d read=%d\n",
-                                bests_reverse.first.score, bests_reverse.first.ref, bests_reverse.first.read);
             } else {
                 bests_reverse = sw_sse2_word<profile_type>(db_aa_sequence, db_3di_sequence, 1, r.dbEndPos1 + 1, r.qEndPos1 + 1,
                                                       gap_open, gap_extend,
@@ -904,8 +877,6 @@ StructureSmithWaterman::s_align StructureSmithWaterman::alignStartPosBacktrace (
 
     r.dbStartPos1 = bests_reverse.first.ref;
     r.qStartPos1 = r.qEndPos1 - bests_reverse.first.read;
-    TRACE_STRUCTURE("[trace] backtrace starts qStart=%d qEnd=%d dbStart=%d dbEnd=%d\n",
-                    r.qStartPos1, r.qEndPos1, r.dbStartPos1, r.dbEndPos1);
 
     if (r.dbStartPos1 == -1) {
         fprintf(stderr, "Target start position is -1. This should not happen.\n");
@@ -924,8 +895,6 @@ StructureSmithWaterman::s_align StructureSmithWaterman::alignStartPosBacktrace (
     db_length = r.dbEndPos1 - r.dbStartPos1 + 1;
     query_length = r.qEndPos1 - r.qStartPos1 + 1;
     int32_t band_width = abs(db_length - query_length) + 1;
-    TRACE_STRUCTURE("[trace] before banded_sw dbLen=%d qLen=%d band=%d profile=%d\n",
-                    db_length, query_length, band_width, profile->isProfile ? 1 : 0);
 
     cigar* path;
     if (profile->isProfile) {
@@ -967,8 +936,6 @@ StructureSmithWaterman::s_align StructureSmithWaterman::alignStartPosBacktrace (
                                              profile->has12St ? profile->mat_12st : NULL,
                                              profile->has12St ? profile->alphabetSize : 0);
     }
-    TRACE_STRUCTURE("[trace] after banded_sw path=%p len=%d\n",
-                    static_cast<void*>(path), path ? path->length : -1);
     if (path != NULL) {
         r.cigar = path->seq;
         r.cigarLen = path->length;
@@ -976,9 +943,7 @@ StructureSmithWaterman::s_align StructureSmithWaterman::alignStartPosBacktrace (
 
     uint32_t aaIds = 0;
     size_t mStateCnt = 0;
-    TRACE_STRUCTURE("[trace] before computerBacktrace\n");
     computerBacktrace(profile, db_aa_sequence, r, backtrace, aaIds,  mStateCnt);
-    TRACE_STRUCTURE("[trace] after computerBacktrace bt=%zu aaIds=%u\n", backtrace.size(), aaIds);
     r.identicalAACnt = aaIds;
     if(path != NULL) {
         delete[] path->seq;
