@@ -4,11 +4,7 @@
 
 #include <thrust/version.h>
 
-#if THRUST_VERSION >= 300000
-
-#include <cuda/barrier>
-
-#if THRUST_VERSION < 300100
+#if THRUST_VERSION >= 300000 && THRUST_VERSION < 300100
 
 namespace thrust {
 struct marv_no_init_tag {
@@ -19,8 +15,6 @@ struct marv_no_init_tag {
 };
 inline constexpr marv_no_init_tag no_init{};
 }
-
-#endif
 
 #endif
 
