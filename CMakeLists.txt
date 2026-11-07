@@ -69,8 +69,9 @@ include_directories(lib/pulchra)
 include_directories(lib/kerasify)
 
 if(HAVE_SSE2)
-    message(WARNING "ProstT5 support requires at least SSE4.1, disabling ProstT5")
+    message(WARNING "ProstT5 and ModernProst support require at least SSE4.1, disabling ProstT5 and ModernProst")
     set(ENABLE_PROSTT5 OFF)
+    set(ENABLE_MODERNPROST OFF)
 endif()
 
 if(ENABLE_PROSTT5 OR ENABLE_MODERNPROST)
