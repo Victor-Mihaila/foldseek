@@ -34,11 +34,6 @@
 #include <signal.h>
 #endif
 
-// How many primary-ranked hits get the aux channel added. A fixed pool rather than a multiple
-// of --max-seqs: --max-seqs is what the user wants written out, while this is an internal recall
-// budget, and tying them together grows the pool whenever more output is requested.
-static const size_t AUX_RESCORE_TOP_N = 100000;
-
 #ifdef HAVE_CUDA
 
 volatile sig_atomic_t keepRunningClient = 1;
@@ -59,6 +54,10 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
         ? (int)auxInfo->auxAlphabetSize : 12;
     const bool packedTarget =
         (DBReader<DBKeyType>::getExtendedDbtype(tdbr->getDbtype()) & Parameters::DBTYPE_EXTENDED_AUX_SEQ) != 0;
+    if (packedTarget && par.prefMode == Parameters::PREF_MODE_UNGAPPED_AND_GAPPED) {
+        Debug(Debug::ERROR) << "--prefilter-mode " << par.prefMode << " is not supported for 3Di+12-state databases\n";
+        EXIT(EXIT_FAILURE);
+    }
     const bool isProfileQuery = Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE);
     DBReader<DBKeyType> *q12StProfileDbr = NULL;
     Sequence *seq12St = NULL;
@@ -76,7 +75,7 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
                               << "(12-state channel disabled, or query DB has none)\n";
     }
     const size_t topN = have12StQuery
-        ? std::min(tdbr->getSize(), AUX_RESCORE_TOP_N)
+        ? std::min(tdbr->getSize(), (size_t) Parameters::AUX_RESCORE_TOP_N)
         : par.maxResListLen;
 
     const size_t batchMax = (par.gpuServer == 0) ? 32 : 1;
@@ -189,6 +188,16 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
         lengthData = lengths.data();
     } else {
         layout = GPUSharedMemory::openSharedMemory(hash);
+        if (layout->packedDb != packedTarget) {
+            Debug(Debug::ERROR) << "gpuserver for database " << par.db2 << " was started for a "
+                                << (layout->packedDb ? "3Di+12-state" : "single-alphabet") << " database\n";
+            EXIT(EXIT_FAILURE);
+        }
+        if (packedTarget && topN > layout->maxResListLen) {
+            Debug(Debug::ERROR) << "gpuserver for database " << par.db2 << " returns at most " << layout->maxResListLen
+                                << " hits per query, but " << topN << " are needed. Restart gpuserver with --max-seqs " << topN << "\n";
+            EXIT(EXIT_FAILURE);
+        }
     }
 
     const bool serverMode = par.gpuServer;
@@ -339,6 +348,12 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
                     claimed = true;
                     memcpy(layout->getQueryPtr(), qNum, qLen);
                     memcpy(layout->getProfilePtr(), qPssm, subMat->alphabetSize * qLen);
+                    if (packedTarget) {
+                        memcpy(layout->getProfile12StPtr(), batchPssm12St[0], GPUSharedMemory::ROWS_12ST * qLen);
+                        layout->topNSize = (int)topN;
+                        layout->maskLetter = (char)x3Di;
+                        layout->maskThreshold = maskThreshold;
+                    }
                     layout->queryLen = qLen;
                     std::atomic_thread_fence(std::memory_order_release);
                     // Debug(Debug::ERROR) << "switch to ready\n";
@@ -530,7 +545,7 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
     Debug::Progress progress(qdbr->getSize());
     const int targetSeqType = tdbr->getDbtype();
     const int querySeqType = qdbr->getDbtype();
-    // Score the primary alphabet over every target, keep the top AUX_RESCORE_TOP_N, add the aux
+    // Score the primary alphabet over every target, keep the top Parameters::AUX_RESCORE_TOP_N, add the aux
     // channel to those on their best primary diagonal, re-rank, then truncate to --max-seqs.
     // Only the top N can gain the aux term, so N is what decides how far down the primary
     // ranking the aux channel is still able to promote a hit.
@@ -557,7 +572,7 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
                            << "(needs the query's aux channel or its 12-state profile, and --alignment-mode 0); "
                            << "scoring the primary alphabet only\n";
     }
-    const size_t topNAux = useAux ? AUX_RESCORE_TOP_N : 0;
+    const size_t topNAux = useAux ? Parameters::AUX_RESCORE_TOP_N : 0;
     size_t rescoreCount = 0;
 #ifdef OPENMP
     omp_set_nested(1);

@@ -36,6 +36,16 @@ int gpuserver(int argc, const char **argv, const Command& command) {
         EXIT(EXIT_FAILURE);
     }
 
+    const bool packedDb = DBReader<DBKeyType>::getExtendedDbtype(dbr->getDbtype()) & Parameters::DBTYPE_EXTENDED_AUX_SEQ;
+    if (packedDb && par.prefMode == Parameters::PREF_MODE_UNGAPPED_AND_GAPPED) {
+        Debug(Debug::ERROR) << "--prefilter-mode " << par.prefMode << " is not supported for 3Di+12-state databases\n";
+        EXIT(EXIT_FAILURE);
+    }
+    // a packed db returns the top N used for the 12-state rescore, which can exceed --max-seqs
+    const unsigned int maxResults = packedDb
+        ? (unsigned int) std::max(par.maxResListLen, std::min(dbr->getSize(), (size_t) Parameters::AUX_RESCORE_TOP_N))
+        : (unsigned int) par.maxResListLen;
+
     std::vector<size_t> offsets;
     offsets.reserve(dbr->getSize() + 1);
 
@@ -70,14 +80,19 @@ int gpuserver(int argc, const char **argv, const Command& command) {
     sigaction(SIGTERM, &act, NULL);
 
     std::string shmFile = GPUSharedMemory::getShmHash(par.db1);
-    GPUSharedMemory* layout = GPUSharedMemory::alloc(shmFile, par.maxSeqLen, par.maxResListLen);
+    GPUSharedMemory* layout = GPUSharedMemory::alloc(shmFile, par.maxSeqLen, maxResults);
+    layout->packedDb = packedDb;
     Debug(Debug::WARNING) << shmFile << "\n";
     while (keepRunning) {
         if (layout->state.load(std::memory_order_acquire) == GPUSharedMemory::READY) {
             std::atomic_thread_fence(std::memory_order_acquire);
 
             Marv::Stats stats;
-            if (par.prefMode == Parameters::PREF_MODE_UNGAPPED_AND_GAPPED) {
+            if (packedDb) {
+                stats = marv.search_scoreOnly_foldseek(
+                    layout->getResultsPtr(), layout->queryLen, layout->getProfilePtr(), layout->getProfile12StPtr(),
+                    layout->topNSize, true, true, layout->maskLetter, layout->maskThreshold);
+            } else if (par.prefMode == Parameters::PREF_MODE_UNGAPPED_AND_GAPPED) {
                 stats = marv.search_scoreOnly_then_scoreEndpos_for_tops(
                     layout->getResultsPtr(), reinterpret_cast<const char *>(layout->getQueryPtr()),
                     layout->queryLen, layout->getProfilePtr(), par.maxResListLen,  -11,  -1,
