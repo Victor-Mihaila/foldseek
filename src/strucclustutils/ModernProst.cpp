@@ -17,7 +17,6 @@
 #include <chrono>
 
 namespace {
-// Foldseek is built without exceptions: report like Debug(Debug::ERROR) and EXIT(EXIT_FAILURE)
 [[noreturn]] void fail(const std::string & msg) {
     fflush(stdout);
     fprintf(stderr, "%s\n", msg.c_str());

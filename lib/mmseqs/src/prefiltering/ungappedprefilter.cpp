@@ -33,13 +33,9 @@
 #include <signal.h>
 #endif
 
-// libmarv masks 3Di runs of at least this length at most
 static const int MARV_MAX_MASK_THRESHOLD = 16;
 static const int AUX_STATE_CNT = 12;
 
-// 12-state score table of a query, AUX_STATE_CNT rows (target state) x qLen columns (query position), the layout of
-// libmarv's 12-state PSSM: from the 12-state matrix for a sequence query, from its 12-state profile for a profile
-// query. Returns false, leaving zeros, if a profile query has no 12-state profile of its length.
 static bool fillAuxTable(std::vector<int8_t> &table, const Sequence &qSeq, DBKeyType queryKey, BaseMatrix *subMatAux,
                          DBReader<DBKeyType> *q12StProfileDbr, Sequence *seq12St, unsigned int thread_idx) {
     table.assign((size_t)AUX_STATE_CNT * qSeq.L, 0);
@@ -120,7 +116,6 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
     std::vector<hit_t> shortResults;
     std::vector<Matcher::result_t> resultsAln;
     const unsigned char x3Di = subMat->aa2num[static_cast<int>('X')];
-    // Masker::maskRepeats masks runs longer than --mask-n-repeat, libmarv masks runs of at least maskThreshold
     const int maskThreshold = par.maskNrepeats + 1;
 
     std::string resultBuffer;
@@ -475,8 +470,6 @@ void runFilterOnGpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMat12
 }
 #endif
 
-// best-scoring segment of the 12-state score along a diagonal, as libmarv's diagonal rescore computes it;
-// auxTable is the query's table from fillAuxTable, target states outside it (X) score 0
 static int scoreAuxOnDiagonal(const std::vector<int8_t> &auxTable, int qLen,
                               const unsigned char *tAux, int tLen, int diagonal) {
     if (qLen <= 0 || tLen <= 0) {
@@ -514,7 +507,6 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
     const int querySeqType = qdbr->getDbtype();
     // Score the primary alphabet over every target, keep the top AUX_RESCORE_TOP_N, add the aux
     // channel to those on their best primary diagonal, re-rank, then truncate to --max-seqs.
-    // The query carries the aux channel itself, or as a profile next to it (q12StProfileDbr).
     const bool queryHasAux = (Sequence::getAuxInfo(querySeqType) != NULL)
                              && (Sequence::getAuxInfo(querySeqType)->auxRemap != NULL);
     const bool targetHasAux = (Sequence::getAuxInfo(targetSeqType) != NULL)
@@ -548,7 +540,6 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
         bool haveAuxTable = false;
         SmithWaterman aligner(par.maxSeqLen, subMat->alphabetSize,
                               par.compBiasCorrection, par.compBiasCorrectionScale, NULL);
-        // A packed DB doesn't have left-over space for masking; targets are repeat-masked here, queries not
         Masker masker(*subMat);
         const bool maskPacked = (par.maskNrepeats > 0) && targetHasAux;
 
@@ -624,8 +615,6 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
                     } else {
                         score = aligner.ungapped_alignment(tSeq.numSequence, tSeq.L);
                     }
-                    // the byte-wise scan saturates; on packed targets, recompute those pairs exactly, as the GPU
-                    // reports them, so both return the same hits
                     if (targetHasAux && score >= aligner.ungappedSaturationScore()) {
                         score = aligner.ungapped_alignment_exact(tSeq.numSequence, tSeq.L, bestPrimaryDiagonal);
                     }
@@ -688,7 +677,6 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
                 {
                     SORT_PARALLEL(shortResults.begin(), shortResults.end(), hit_t::compareHitsByScoreAndId);
                     rescoreCount = std::min(topNAux, shortResults.size());
-                    // only the top N can carry the aux score; the GPU returns no others either
                     shortResults.resize(rescoreCount);
                 }
 #pragma omp barrier
@@ -838,7 +826,6 @@ int prefilterInternal(int argc, const char **argv, const Command &command, int m
         free(serialized);
     }
 
-    // a profile query carries its aux channel as a profile DB next to it (<query><Sequence::auxProfileSuffix>)
     DBReader<DBKeyType> *q12StProfileDbr = NULL;
     const std::string auxProfileDB = par.db1 + Sequence::auxProfileSuffix;
     if (subMatAux != NULL && Parameters::isEqualDbtype(qdbr->getDbtype(), Parameters::DBTYPE_HMM_PROFILE)

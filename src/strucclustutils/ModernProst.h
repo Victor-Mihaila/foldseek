@@ -42,7 +42,6 @@ struct ModernProstLayer {
 
 class ModernProstModel {
 public:
-    // device: "cpu" or a ggml device name (e.g. "CUDA0", see getGpuDevices)
     ModernProstModel(const std::string & gguf_path, const std::string & device);
     static std::vector<std::string> getGpuDevices();
     ~ModernProstModel();
@@ -81,7 +80,6 @@ public:
                                const std::function<void(size_t)> & on_done = nullptr);
 
     void clear_cache();
-    // bytes reserved by the cached graphs' compute buffers
     size_t cache_bytes() const;
 
     ModernProstModel & model;
@@ -117,7 +115,6 @@ private:
     static int bucket_for(int n);
 
     int n_threads = 1;
-    // compute backend: the model's on a GPU, an own CPU backend otherwise, so contexts can share one CPU model
     ggml_backend_t backend = nullptr;
     bool own_backend = false;
     std::map<std::tuple<int,int,int>, Cached> cache;

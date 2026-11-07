@@ -480,8 +480,6 @@ void reorderDbByIdOrder(
 
 extern int createdb(int argc, const char **argv, const Command& command);
 #if defined(HAVE_PROSTT5) || defined(HAVE_MODERNPROST)
-// ProstT5 and ModernProst predict structure from sequence: build the plain amino-acid DB with createdb first,
-// shuffled, without masking and on the CPU, dropping those options (and the model option) from argv
 static int createSequenceDb(LocalParameters &par, int argc, const char **argv, const Command &command,
                             const MMseqsParameter *dropParam) {
     for (size_t i = 0; i < command.params->size(); ++i) {
@@ -525,7 +523,6 @@ static int createSequenceDb(LocalParameters &par, int argc, const char **argv, c
     return status;
 }
 
-// rewrite db with its entries in id order (the writer threads interleave them)
 static void sortDbByIdOrder(LocalParameters &par, const std::string &db) {
     DBReader<unsigned int> resultReader(db.c_str(), (db+".index").c_str(), par.threads, DBReader<unsigned int>::USE_INDEX|DBReader<unsigned int>::USE_DATA);
     resultReader.open(DBReader<unsigned int>::NOSORT);
@@ -596,7 +593,6 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
         const std::string ss12Db  = outputName + "_ss12";
         const std::string aaTmp   = outputName + "_aaprof";
         const int profType = Parameters::DBTYPE_HMM_PROFILE;
-        // as for ProstT5: one thread per CUDA device with --gpu 1
         std::vector<std::string> devices;
         if (par.gpu == 1) {
             std::vector<std::string> gpuDevices = ModernProstModel::getGpuDevices();
@@ -611,7 +607,6 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
                 return EXIT_FAILURE;
             }
         }
-        // one model shared by all CPU threads, one per CUDA device otherwise
         std::unique_ptr<ModernProstModel> cpuModel;
         if (par.gpu != 1) {
             cpuModel.reset(new ModernProstModel(par.modernprostModel, "cpu"));
@@ -637,8 +632,6 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
                 std::vector<uint8_t> r3, r12, rAA;
                 const size_t blockSize = par.gpu == 1 ? (size_t) 32768
                                                       : (size_t) std::max(1, par.modernprostBatch) * 8;
-                // graphs are cached per batch shape; between blocks nothing is in flight, so drop them there
-                // once their compute buffers exceed this budget
                 const size_t graphCacheBytes = par.gpu == 1 ? ((size_t) 8 << 30) : ((size_t) 1 << 30);
                 std::vector<std::string> blkSeq;
                 std::vector<unsigned int> blkKey;
@@ -684,7 +677,6 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
         sortDbByIdOrder(par, ss12Db);
         sortDbByIdOrder(par, aaTmp);
 
-        // the profile db replaces the sequence db but keeps its lookup and source
         const char *keepSuffixes[] = {".lookup", ".source"};
         for (const char *suffix : keepSuffixes) {
             if (FileUtil::fileExists((outputName + suffix).c_str())) {

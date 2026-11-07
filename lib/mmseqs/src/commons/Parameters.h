@@ -328,7 +328,6 @@ public:
     static const int PREF_MODE_UNGAPPED = 1;
     static const int PREF_MODE_EXHAUSTIVE = 2;
     static const int PREF_MODE_UNGAPPED_AND_GAPPED = 3;
-    // ungapped prefilter: hits per query that get the aux (12-state) channel added
     static const size_t AUX_RESCORE_TOP_N = 100000;
 
     // unpackdb

@@ -52,7 +52,6 @@ while [ "$STEP" -lt "$NUM_IT" ]; do
             PARAM="UNGAPPEDPREFILTER_PAR_$STEP"
             eval TMP="\$$PARAM"
         fi
-        # the first step's prefilter is used as is, later ones minus the hits already aligned
         PREF_OUT="$TMP_PATH/pref_tmp_${STEP}"
         if [ $STEP -eq 0 ]; then
             PREF_OUT="$TMP_PATH/pref_${STEP}"

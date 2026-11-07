@@ -37,7 +37,6 @@ void updateValdiation() {
     Sequence::registerAuxSplit(Parameters::DBTYPE_EXTENDED_AUX_SEQ,
                                remap3Di, remapAux, auxMatData, auxMatDataLen,
                                Alphabet12St::STATE_CNT);
-    // the 12-state profile of a profile query <db>_ss is <db>_ss12
     Sequence::auxProfileSuffix = "12";
 }
 void (*validatorUpdate)(void) = updateValdiation;
@@ -636,7 +635,6 @@ std::vector<Command> foldseekCommands = {
 
 std::vector<KmerThreshold> externalThreshold = {
         {Parameters::DBTYPE_AMINO_ACIDS, 7, 197.0, 11.22},
-        // 3Di profile queries with a 12-state profile (Foldseek 2): 82 at -s 9.5
         {Parameters::DBTYPE_HMM_PROFILE, 6, 116.55, 3.6364, true}
 };
 

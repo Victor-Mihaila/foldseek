@@ -117,8 +117,6 @@ ResolvedStructureProfileDbs resolveStructureProfileDbs(LocalParameters &par,
             EXIT(EXIT_FAILURE);
         }
     }
-    // a packed _ss serves both profiles: result2profile reads its 3Di channel, and its 12-state channel with
-    // --profile-aux-channel 1 (create12StateProfileParameters)
     if (packedInput3Di12St) {
         resolved.ss12InputDb = resolved.ssInputDb;
     } else if (FileUtil::fileExists((par.db1 + "_ss12.dbtype").c_str())) {
@@ -160,14 +158,9 @@ std::string create3DiProfileParameters(LocalParameters &par) {
 }
 
 std::string create12StateProfileParameters(LocalParameters &par) {
-    // result2profile's EvalueComputation has precomputed Karlin-Altschul parameters only for known matrix and gap
-    // combinations and otherwise estimates them by simulation (up to a minute per call): the 12-state matrix is
-    // passed under the blosum62.out name with BLOSUM62's gap costs (11/1) to use the precomputed ones. Both also
-    // feed the MSA filter, so changing them changes the 12-state profiles.
     const std::string matrixAlias = getSerializedMatrix(par, "12st.out", "blosum62.out");
     const MultiParam<NuclAA<int> > gapOpen(NuclAA<int>(11, par.gapOpen.values.nucleotide()));
     const MultiParam<NuclAA<int> > gapExtend(NuclAA<int>(1, par.gapExtend.values.nucleotide()));
-    // packed 3Di+12-state sequences are profiled on their 12-state channel
     par.profileAuxChannel = 1;
     const std::string params = createProfileParameters(par,
                                    matrixAlias,

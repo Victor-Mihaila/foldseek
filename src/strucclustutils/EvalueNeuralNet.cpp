@@ -104,7 +104,6 @@ void EvalueNeuralNet::fill12StComposition(float *dst, const Sequence &seq, const
         return;
     }
 
-    // feature index of every state of seq's alphabet, -1 for states without one
     int feature[256];
     std::fill(feature, feature + 256, -1);
     for (int aa = 0; aa < alphabetSize; ++aa) {

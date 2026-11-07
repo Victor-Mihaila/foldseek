@@ -201,10 +201,9 @@ public:
    identical to the 2-argument form -- use that one whenever the diagonal is not needed, so the
    hot path stays untouched.
 
-   Ties go to the cell with the smallest db position, then the smallest query position.
    Note the score saturates at 255 - profile->bias (the accumulator is unsigned 8-bit), so on
    strongly matching pairs several diagonals can reach the ceiling; the reported one is then the
-   first to get there rather than the true argmax (ungapped_alignment_exact gives both exactly).
+   first to get there rather than the true argmax.
 
    @param	db_sequence	target sequence in numeric encoding
    @param	db_length	length of the target sequence
@@ -227,7 +226,6 @@ public:
                                 int32_t db_length,
                                 int &bestDiagonal);
 
-   // score at which the byte-wise ungapped_alignment saturates for the current query profile
    int ungappedSaturationScore() const;
 
   /*!	@function	Create the query profile using the query sequence.
@@ -293,7 +291,6 @@ public:
     const static unsigned int PROFILE_SEQ = 4;
 
 private:
-   // rows of ungapped_alignment_exact, kept across calls
    std::vector<int> exactPrev;
    std::vector<int> exactCurr;
    // Shared body of the two ungapped_alignment overloads. TrackDiagonal is a compile-time flag so

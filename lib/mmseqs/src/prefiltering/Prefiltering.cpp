@@ -884,7 +884,6 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
                 if (id12 != DB_ENTRY_NOT_FOUND) {
                     seq12St->mapSequence(id12, qKey, q12StProfileDbr->getData(id12, thread_idx),
                                          q12StProfileDbr->getSeqLen(id12));
-                    // a profile of another length cannot be scored on the query's diagonals
                     seq12StPtr = (seq12St->L == seq.L) ? seq12St : NULL;
                 }
             }

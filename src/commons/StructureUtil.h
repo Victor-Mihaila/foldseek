@@ -39,7 +39,6 @@ public:
         }
     }
 
-    // profile counterpart of mask12StSeqs: zero the 12st profile column at the same positions
     static inline void mask12StProfile(const Sequence &q3Di, Sequence &q12St) {
         const int L = std::min(q3Di.L, q12St.L);
         const int alph = q12St.subMat->alphabetSize;

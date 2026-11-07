@@ -41,7 +41,6 @@ int gpuserver(int argc, const char **argv, const Command& command) {
         Debug(Debug::ERROR) << "--prefilter-mode " << par.prefMode << " is not supported for 3Di+12-state databases\n";
         EXIT(EXIT_FAILURE);
     }
-    // a packed db returns the top N used for the 12-state rescore, which can exceed --max-seqs
     const unsigned int maxResults = packedDb
         ? (unsigned int) std::max(par.maxResListLen, std::min(dbr->getSize(), (size_t) Parameters::AUX_RESCORE_TOP_N))
         : (unsigned int) par.maxResListLen;

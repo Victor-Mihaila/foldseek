@@ -29,7 +29,6 @@ struct FoldseekSearchCache;
 struct SearchWorkspaceCache {
     std::unique_ptr<libmarv::ScoreOnlySearch> search;
     size_t maxBytes = 0;
-    // aligners and search state of the Foldseek search (one call per query batch)
     std::shared_ptr<FoldseekSearchCache> foldseek;
 
     std::unique_ptr<libmarv::ScoreOnlySearch> acquire(libmarv::GpuDatabase& db, int outputSize, int topN, int queries) {

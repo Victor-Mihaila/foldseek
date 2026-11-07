@@ -59,8 +59,6 @@ public:
 
     virtual double getBackgroundProb(size_t aa_index);
 
-    // index in this matrix's alphabet of the residue with index origIndex in the full alphabet
-    // (differs only for a ReducedMatrix)
     virtual unsigned char reduceIndex(unsigned char origIndex) const { return origIndex; }
 
     virtual void setupLetterMapping() {};

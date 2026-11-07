@@ -5,9 +5,6 @@
 #include "../../namespace.hpp"
 LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
 
-    // Among equal-scoring cells, the reported end position is the one with the smallest subject position, then the smallest
-    // query position (the rule of the CPU ungapped alignment), so it does not depend on the kernel configuration or on the
-    // order of the group reduction
     __device__ __forceinline__
     bool endPosIsBetter(int score, int subjectPos, int queryPos, int otherScore, int otherSubjectPos, int otherQueryPos){
         if(score != otherScore) return score > otherScore;
@@ -15,7 +12,6 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
         return queryPos < otherQueryPos;
     }
 
-    // group reduction over (score, query end, subject end)
     struct BetterEndPos{
         __device__ int3 operator()(const int3& l, const int3& r) const{
             return endPosIsBetter(l.x, l.z, l.y, r.x, r.z, r.y) ? l : r;

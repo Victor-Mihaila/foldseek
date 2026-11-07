@@ -54,8 +54,6 @@ Sequence::Sequence(size_t maxLen, int seqType, const BaseMatrix *subMat, const u
         this->activePrimaryRemap = auxInfo->primaryRemap;
         this->activeAuxRemap = auxInfo->auxRemap;
         this->rawPrimaryRemap = this->activePrimaryRemap;
-        // packed DB bytes decode to full-alphabet indices; a reduced alphabet (e.g. linclust's) groups them
-        // like aa2num groups letters on unpacked DBs
         if (this->activePrimaryRemap != NULL && subMat != NULL) {
             for (size_t i = 0; i < 256; i++) {
                 reducedPrimaryRemap[i] = subMat->reduceIndex(this->activePrimaryRemap[i]);

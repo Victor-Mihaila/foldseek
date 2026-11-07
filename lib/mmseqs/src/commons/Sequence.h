@@ -542,7 +542,6 @@ public:
         unsigned int auxAlphabetSize;        // number of states in aux alphabet (e.g. 12)
     };
     static std::vector<SeqAuxInfo> auxRegistry;
-    // suffix of the DB holding a profile query's aux-channel profile (<query><suffix>), empty if none is registered
     static std::string auxProfileSuffix;
     static void registerAuxSplit(unsigned int extFlag,
                                  const unsigned char *primary,
@@ -555,8 +554,6 @@ public:
     // Per-instance remap pointers (NULL if no remap active)
     const unsigned char *activePrimaryRemap;
     const unsigned char *activeAuxRemap;
-    // primary remap for packed bytes read from the DB, passed through the matrix's alphabet reduction;
-    // packed bytes rebuilt from numSequence (prefilter lookups) are already in the matrix alphabet
     const unsigned char *rawPrimaryRemap;
     unsigned char reducedPrimaryRemap[256];
 

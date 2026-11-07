@@ -198,7 +198,6 @@ int structurealign(int argc, const char **argv, const Command& command) {
     }
     bool queryHas12St = query3Di12St || (q12StDbr != NULL);
     bool use12StScoring = par.useAuxScoring && queryHas12St && target3Di12St;
-    // automatic: the Foldseek 2 NN when the 12-state alphabet is scored, the Foldseek 1 NN otherwise
     const int evalueNNMode = (par.evalueNNMode == LocalParameters::EVALUE_NN_MODE_AUTO)
         ? (use12StScoring ? LocalParameters::EVALUE_NN_MODE_3DI_12ST : LocalParameters::EVALUE_NN_MODE_3DI)
         : par.evalueNNMode;
@@ -403,7 +402,6 @@ int structurealign(int argc, const char **argv, const Command& command) {
                     : static_cast<const BaseMatrix *>(subMat12St);
                 qSeq12St.reset(new Sequence(par.maxSeqLen, q12StDbtype, q12StMat, 0, false, par.compBiasCorrection));
             }
-            // the e-value NN takes the unmasked 12-state sequence of packed queries
             if (use12StEvalue && query3Di12St) {
                 qSeq12StUnmaskedBuf.reserve(par.maxSeqLen);
                 qSeq12StUnmasked.reset(new Sequence(par.maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, subMat12St, 0, false, par.compBiasCorrection));
@@ -445,7 +443,6 @@ int structurealign(int argc, const char **argv, const Command& command) {
                 Sequence *qSeq12StForEvalue = qSeq12St.get();
                 if (query3Di12St) {
                     if (qSeq12StUnmasked) {
-                        // the e-value NN takes the unmasked 12-state sequence, the alignment the masked one
                         StructureUtil::split3Di12St(querySeq3Di, querySeqLen, qSeq3Di21Buf, qSeq12StUnmaskedBuf, subMat3Di, *subMat12St, false);
                         qSeq12StUnmasked->mapSequence(id, queryKey, qSeq12StUnmaskedBuf.data(), querySeqLen);
                         qSeq12StForEvalue = qSeq12StUnmasked.get();

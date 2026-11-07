@@ -20,7 +20,6 @@ struct KmerThreshold{
     int kmerSize;
     float base;
     float sensPerStep;
-    // profile queries that also carry the aux (12-state) channel
     bool auxProfile = false;
 };
 

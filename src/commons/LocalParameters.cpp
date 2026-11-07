@@ -246,7 +246,6 @@ LocalParameters::LocalParameters() :
     makepaddeddb.push_back(&PARAM_V);
     makepaddeddb.push_back(&PARAM_CLUSTER_SEARCH);
 
-    //result2structprofilebase: the result2profile parameters of the 3Di, amino-acid and 12-state profiles
     result2structprofilebase.push_back(&PARAM_SUB_MAT);
     result2structprofilebase.push_back(&PARAM_E);
     result2structprofilebase.push_back(&PARAM_MASK_PROFILE);

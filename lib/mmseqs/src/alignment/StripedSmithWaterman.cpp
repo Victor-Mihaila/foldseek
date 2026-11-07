@@ -1923,8 +1923,6 @@ int SmithWaterman::ungapped_alignment_impl(const unsigned char *db_sequence, int
             if (columnBest > trackedBest) {
                 trackedBest = columnBest;
                 const unsigned char *cells = (const unsigned char *) s_curr;
-                // striped layout: query position = band + lane * W (createQueryProfile), so lane-major
-                // order visits query positions in ascending order; take the smallest holding the column best
                 bool found = false;
                 for (int lane = 0; lane < element_count && found == false; lane++) {
                     for (int band = 0; band < W; band++) {
