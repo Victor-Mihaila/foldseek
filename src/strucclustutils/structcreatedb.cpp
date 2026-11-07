@@ -599,6 +599,9 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
                 std::vector<uint8_t> r3, r12, rAA;
                 const size_t blockSize = par.gpu == 1 ? (size_t) 32768
                                                       : (size_t) std::max(1, par.modernprostBatch) * 8;
+                // graphs are cached per batch shape; between blocks nothing is in flight, so drop them there
+                // once their compute buffers exceed this budget
+                const size_t graphCacheBytes = par.gpu == 1 ? ((size_t) 8 << 30) : ((size_t) 1 << 30);
                 std::vector<std::string> blkSeq;
                 std::vector<unsigned int> blkKey;
                 std::vector<std::vector<uint8_t>> blk3, blk12;
@@ -630,6 +633,9 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
                     wSs.writeData((const char *) r3.data(),  r3.size(),  key, thread_idx);
                     wSs12.writeData((const char *) r12.data(), r12.size(), key, thread_idx);
                     wAA.writeData((const char *) rAA.data(), rAA.size(), key, thread_idx);
+                    }
+                    if (context.cache_bytes() > graphCacheBytes) {
+                        context.clear_cache();
                     }
                 }
             }

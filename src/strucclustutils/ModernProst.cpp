@@ -461,6 +461,14 @@ ModernProst::Cached * ModernProst::get_graph(int n_tokens, int n_seq, int slot) 
     return &res.first->second;
 }
 
+size_t ModernProst::cache_bytes() const {
+    size_t bytes = 0;
+    for (const auto & kv : cache) {
+        if (kv.second.galloc) bytes += ggml_gallocr_get_buffer_size(kv.second.galloc, 0);
+    }
+    return bytes;
+}
+
 void ModernProst::clear_cache() {
     for (auto & kv : cache) {
         if (kv.second.galloc) ggml_gallocr_free(kv.second.galloc);

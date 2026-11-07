@@ -98,6 +98,8 @@ public:
                                const std::function<void(size_t)> & on_done = nullptr);
 
     void clear_cache();
+    // bytes reserved by the cached graphs' compute buffers
+    size_t cache_bytes() const;
 
     ModernProstModel & model;
 
