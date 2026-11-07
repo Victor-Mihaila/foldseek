@@ -623,8 +623,20 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
         }
         reader.close();
 
+        // the profile db replaces the sequence db but keeps its lookup and source
+        const char *keepSuffixes[] = {".lookup", ".source"};
+        for (const char *suffix : keepSuffixes) {
+            if (FileUtil::fileExists((outputName + suffix).c_str())) {
+                FileUtil::move((outputName + suffix).c_str(), (aaTmp + "_keep" + suffix).c_str());
+            }
+        }
         DBReader<unsigned int>::removeDb(outputName);
         DBReader<unsigned int>::moveDb(aaTmp, outputName);
+        for (const char *suffix : keepSuffixes) {
+            if (FileUtil::fileExists((aaTmp + "_keep" + suffix).c_str())) {
+                FileUtil::move((aaTmp + "_keep" + suffix).c_str(), (outputName + suffix).c_str());
+            }
+        }
         Debug(Debug::INFO) << "ModernProst profile db written: " << outputName
                            << " {,_ss,_ss12} (" << Parameters::DBTYPE_HMM_PROFILE << " = HMM_PROFILE)\n";
         return EXIT_SUCCESS;
