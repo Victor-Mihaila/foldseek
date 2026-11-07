@@ -405,8 +405,16 @@ int structureungappedalign(int argc, const char **argv, const Command& command) 
                     }
                 } else if (use12StScoring || use12StEvalue) {
                     unsigned int query12StId = q12StDbr->sequenceReader->getId(queryKey);
+                    if (query12StId == UINT_MAX) {
+                        Debug(Debug::ERROR) << "Query " << queryKey << " is missing in the _ss12 database\n";
+                        EXIT(EXIT_FAILURE);
+                    }
                     char *querySeq12St = q12StDbr->sequenceReader->getData(query12StId, thread_idx);
                     qSeq12St->mapSequence(id, queryKey, querySeq12St, querySeqLen);
+                    if (qSeq12St->L != static_cast<int>(querySeqLen)) {
+                        Debug(Debug::ERROR) << "Query " << queryKey << " has a different length in the _ss12 database\n";
+                        EXIT(EXIT_FAILURE);
+                    }
                 }
                 qSeq3Di.mapSequence(id, queryKey, querySeq3Di21, querySeqLen);
                 qSeqAA.mapSequence(id, queryKey, querySeqAA, querySeqLen);

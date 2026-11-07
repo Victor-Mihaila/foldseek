@@ -158,6 +158,7 @@ public:
     std::vector<MMseqsParameter *> expandmultimer;
     std::vector<MMseqsParameter *> convert2pdb;
     std::vector<MMseqsParameter *> makepaddeddb;
+    std::vector<MMseqsParameter *> result2structprofilebase;
     std::vector<MMseqsParameter *> result2structprofile;
     std::vector<MMseqsParameter *> createstructsubdb;
     std::vector<MMseqsParameter *> createstructinterfacedb;

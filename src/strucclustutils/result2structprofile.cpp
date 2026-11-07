@@ -73,10 +73,7 @@ int result2structprofile(int argc, const char **argv, const Command &command) {
             EXIT(EXIT_FAILURE);
         }
         cmd.addVariable("LOWCONFQ", "1");
-        std::vector<MMseqsParameter *> lcq;
-        lcq.push_back(&par.PARAM_THREADS);
-        lcq.push_back(&par.PARAM_V);
-        cmd.addVariable("LOWCONFQ_PAR", par.createParameterString(lcq).c_str());
+        cmd.addVariable("LOWCONFQ_PAR", par.createParameterString(par.lowconfquery).c_str());
     }
 
     cmd.addVariable("VERBOSITY", par.createParameterString(par.onlyverbosity).c_str());
@@ -241,12 +238,10 @@ int lowconfquery(int argc, const char **argv, const Command &command) {
     DBReader<unsigned int> pDbr(par.db2.c_str(), par.db2Index.c_str(), par.threads,
                                 DBReader<unsigned int>::USE_INDEX | DBReader<unsigned int>::USE_DATA);
     pDbr.open(DBReader<unsigned int>::LINEAR_ACCCESS);
-    const bool isProfile = Parameters::isEqualDbtype(pDbr.getDbtype(), Parameters::DBTYPE_HMM_PROFILE);
-    if (isProfile == false && StructureUtil::is3Di12StDb(pDbr.getDbtype()) == false) {
-        Debug(Debug::ERROR) << "lowconfquery: " << par.db2 << " is neither a profile db nor a packed 3Di+12-state db\n";
+    if (Parameters::isEqualDbtype(pDbr.getDbtype(), Parameters::DBTYPE_HMM_PROFILE) == false) {
+        Debug(Debug::ERROR) << "lowconfquery: " << par.db2 << " is not a profile db\n";
         EXIT(EXIT_FAILURE);
     }
-    const char *what = isProfile ? "profile positions" : "3Di+12-state residues";
     DBWriter writer(par.db3.c_str(), par.db3Index.c_str(), par.threads, par.compressed, pDbr.getDbtype());
     writer.open();
 
@@ -266,7 +261,7 @@ int lowconfquery(int argc, const char **argv, const Command &command) {
             const unsigned int key = pDbr.getDbKey(id);
             const unsigned char *data = reinterpret_cast<const unsigned char *>(pDbr.getData(id, thread_idx));
             const size_t len = pDbr.getEntryLen(id) - 1;
-            const size_t L = isProfile ? len / Sequence::PROFILE_READIN_SIZE : len - 1;
+            const size_t L = len / Sequence::PROFILE_READIN_SIZE;
             rec.assign(data, data + len);
             const size_t qId = qDbr.getId(key);
             if (qId == UINT_MAX) {
@@ -283,11 +278,7 @@ int lowconfquery(int argc, const char **argv, const Command &command) {
             nPos += L;
             for (size_t i = 0; i < L; ++i) {
                 if (islower(static_cast<unsigned char>(qSeq[i]))) {
-                    if (isProfile) {
-                        std::fill_n(rec.data() + i * Sequence::PROFILE_READIN_SIZE, Sequence::PROFILE_AA_SIZE, 0);
-                    } else {
-                        rec[i] = Alphabet12St::PACKED_X;
-                    }
+                    std::fill_n(rec.data() + i * Sequence::PROFILE_READIN_SIZE, Sequence::PROFILE_AA_SIZE, 0);
                     nZeroed++;
                 }
             }
@@ -298,8 +289,8 @@ int lowconfquery(int argc, const char **argv, const Command &command) {
     pDbr.close();
     qDbr.close();
 
-    Debug(Debug::INFO) << "lowconfquery: " << nZeroed << " of " << nPos << " " << what
-                       << " at low-confidence query residues " << (isProfile ? "zeroed" : "set to X") << " (" << par.db2 << ")\n";
+    Debug(Debug::INFO) << "lowconfquery: " << nZeroed << " of " << nPos << " profile positions"
+                       << " at low-confidence query residues zeroed (" << par.db2 << ")\n";
     if (nPos > 0 && nZeroed == 0) {
         Debug(Debug::WARNING) << "lowconfquery: no query residue is lowercase. The query db carries no pLDDT marks "
                                  "(build it with --mask-bfactor-threshold), so nothing was masked\n";

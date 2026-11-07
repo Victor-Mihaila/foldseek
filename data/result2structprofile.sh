@@ -43,6 +43,8 @@ if [ -n "${CREATE_SS12_PROFILE}" ]; then
     $RUNNER "$MMSEQS" base:result2profile "${INPUT_SS12_DB}" "${TARGET_SS12_DB}" "${RESULT}" "${SS12_RAW_OUT}" ${PROFILE_SS12_PAR} \
         || fail "result2profile for 12-state died"
 
+    # --profile-output-mode 1: result2profile labels the 12-state profile with the 20 amino-acid columns of the
+    # blosum62.out alias; keep the 12 state columns, relabel and renormalise them
     if [ -n "${PROFILE_SS12_OUTPUT_COLUMNS}" ]; then
         awk -v keep="${PROFILE_SS12_OUTPUT_COLUMNS}" \
             -v labels="${PROFILE_SS12_OUTPUT_LABELS:-A C D E F G H I K L M N}" '

@@ -80,14 +80,7 @@ std::string createProfileParameters(LocalParameters &par,
         par.gapExtend = *gapExtendOverride;
     }
 
-    std::vector<MMseqsParameter *> profileParams;
-    for (MMseqsParameter *p : par.result2structprofile) {
-        if (p->uniqid != par.PARAM_PROFILE_LOWCONF_MEMBERS.uniqid && p->uniqid != par.PARAM_LOWCONF_MEMBER_MAX.uniqid
-            && p->uniqid != par.PARAM_PROFILE_LOWCONF_QUERY.uniqid) {
-            profileParams.push_back(p);
-        }
-    }
-    const std::string profilePar = par.createParameterString(profileParams);
+    const std::string profilePar = par.createParameterString(par.result2structprofilebase);
 
     par.scoringMatrixFile = savedScoringMatrixFile;
     par.seedScoringMatrixFile = savedSeedScoringMatrixFile;
@@ -221,6 +214,10 @@ std::string create3DiProfileParameters(LocalParameters &par) {
 }
 
 std::string create12StateProfileParameters(LocalParameters &par) {
+    // result2profile's EvalueComputation has precomputed Karlin-Altschul parameters only for known matrix and gap
+    // combinations and otherwise estimates them by simulation (up to a minute per call): the 12-state matrix is
+    // passed under the blosum62.out name with BLOSUM62's gap costs (11/1) to use the precomputed ones. Both also
+    // feed the MSA filter, so changing them changes the 12-state profiles.
     const std::string matrixAlias = getSerializedMatrix(par, "12st.out", "blosum62.out");
     const MultiParam<NuclAA<int> > gapOpen(NuclAA<int>(11, par.gapOpen.values.nucleotide()));
     const MultiParam<NuclAA<int> > gapExtend(NuclAA<int>(1, par.gapExtend.values.nucleotide()));

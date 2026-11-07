@@ -246,35 +246,37 @@ LocalParameters::LocalParameters() :
     makepaddeddb.push_back(&PARAM_V);
     makepaddeddb.push_back(&PARAM_CLUSTER_SEARCH);
 
-    //result2structprofile
-    result2structprofile.push_back(&PARAM_SUB_MAT);
-    result2structprofile.push_back(&PARAM_E);
-    result2structprofile.push_back(&PARAM_MASK_PROFILE);
-    result2structprofile.push_back(&PARAM_E_PROFILE);
-    result2structprofile.push_back(&PARAM_NO_COMP_BIAS_CORR);
-    result2structprofile.push_back(&PARAM_NO_COMP_BIAS_CORR_SCALE);
-    result2structprofile.push_back(&PARAM_WG);
-    result2structprofile.push_back(&PARAM_ALLOW_DELETION);
-    result2structprofile.push_back(&PARAM_FILTER_MSA);
-    result2structprofile.push_back(&PARAM_FILTER_MIN_ENABLE);
-    result2structprofile.push_back(&PARAM_FILTER_MAX_SEQ_ID);
-    result2structprofile.push_back(&PARAM_FILTER_QID);
-    result2structprofile.push_back(&PARAM_FILTER_QSC);
-    result2structprofile.push_back(&PARAM_FILTER_COV);
-    result2structprofile.push_back(&PARAM_FILTER_NDIFF);
-    result2structprofile.push_back(&PARAM_PC_MODE);
-    result2structprofile.push_back(&PARAM_PCA);
-    result2structprofile.push_back(&PARAM_PCB);
-    result2structprofile.push_back(&PARAM_PRELOAD_MODE);
-    result2structprofile.push_back(&PARAM_GAP_OPEN);
-    result2structprofile.push_back(&PARAM_GAP_EXTEND);
+    //result2structprofilebase: the result2profile parameters of the 3Di, amino-acid and 12-state profiles
+    result2structprofilebase.push_back(&PARAM_SUB_MAT);
+    result2structprofilebase.push_back(&PARAM_E);
+    result2structprofilebase.push_back(&PARAM_MASK_PROFILE);
+    result2structprofilebase.push_back(&PARAM_E_PROFILE);
+    result2structprofilebase.push_back(&PARAM_NO_COMP_BIAS_CORR);
+    result2structprofilebase.push_back(&PARAM_NO_COMP_BIAS_CORR_SCALE);
+    result2structprofilebase.push_back(&PARAM_WG);
+    result2structprofilebase.push_back(&PARAM_ALLOW_DELETION);
+    result2structprofilebase.push_back(&PARAM_FILTER_MSA);
+    result2structprofilebase.push_back(&PARAM_FILTER_MIN_ENABLE);
+    result2structprofilebase.push_back(&PARAM_FILTER_MAX_SEQ_ID);
+    result2structprofilebase.push_back(&PARAM_FILTER_QID);
+    result2structprofilebase.push_back(&PARAM_FILTER_QSC);
+    result2structprofilebase.push_back(&PARAM_FILTER_COV);
+    result2structprofilebase.push_back(&PARAM_FILTER_NDIFF);
+    result2structprofilebase.push_back(&PARAM_PC_MODE);
+    result2structprofilebase.push_back(&PARAM_PCA);
+    result2structprofilebase.push_back(&PARAM_PCB);
+    result2structprofilebase.push_back(&PARAM_PRELOAD_MODE);
+    result2structprofilebase.push_back(&PARAM_GAP_OPEN);
+    result2structprofilebase.push_back(&PARAM_GAP_EXTEND);
 #ifdef GAP_POS_SCORING
-    result2structprofile.push_back(&PARAM_GAP_PSEUDOCOUNT);
+    result2structprofilebase.push_back(&PARAM_GAP_PSEUDOCOUNT);
 #endif
-    result2structprofile.push_back(&PARAM_THREADS);
-    result2structprofile.push_back(&PARAM_COMPRESSED);
-    result2structprofile.push_back(&PARAM_V);
-    result2structprofile.push_back(&PARAM_PROFILE_OUTPUT_MODE);
+    result2structprofilebase.push_back(&PARAM_THREADS);
+    result2structprofilebase.push_back(&PARAM_COMPRESSED);
+    result2structprofilebase.push_back(&PARAM_V);
+    result2structprofilebase.push_back(&PARAM_PROFILE_OUTPUT_MODE);
+    //result2structprofile
+    result2structprofile = result2structprofilebase;
     result2structprofile.push_back(&PARAM_PROFILE_LOWCONF_MEMBERS);
     result2structprofile.push_back(&PARAM_LOWCONF_MEMBER_MAX);
     result2structprofile.push_back(&PARAM_PROFILE_LOWCONF_QUERY);

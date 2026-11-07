@@ -8,6 +8,7 @@
 namespace Alphabet12St{
     static const size_t STATE_CNT = 12;
     static const char INVALID_STATE = 6; // H
+    // first value after the 21 x 12 packed states (3Di * 12 + 12-state): X in both channels
     static const unsigned char PACKED_X = 252;
     static const unsigned char X_NUM = 20;
     const double DISTANCE_ALPHA_BETA = 1.5336;

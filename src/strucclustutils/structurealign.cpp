@@ -65,8 +65,7 @@ int alignStructure(StructureSmithWaterman & structureSmithWaterman,
 
     const int32_t rawSmithWatermanScore = static_cast<int32_t>(align.score1);
     int32_t score;
-    const bool useReverseScoreForThisQuery = useReverseScore;
-    if (useReverseScoreForThisQuery) {
+    if (useReverseScore) {
         StructureSmithWaterman::s_align revAlign;
         revAlign = reverseStructureSmithWaterman.alignScoreEndPos<StructureSmithWaterman::PROFILE>(tSeqAA.numSequence, tSeq3Di.numSequence,
                                                                       targetSeqLen, par.gapOpen.values.aminoacid(),
@@ -461,8 +460,16 @@ int structurealign(int argc, const char **argv, const Command& command) {
                     }
                 } else if (use12StScoring || use12StEvalue) {
                     unsigned int query12StId = q12StDbr->sequenceReader->getId(queryKey);
+                    if (query12StId == UINT_MAX) {
+                        Debug(Debug::ERROR) << "Query " << queryKey << " is missing in the _ss12 database\n";
+                        EXIT(EXIT_FAILURE);
+                    }
                     char *querySeq12St = q12StDbr->sequenceReader->getData(query12StId, thread_idx);
                     qSeq12St->mapSequence(id, queryKey, querySeq12St, querySeqLen);
+                    if (qSeq12St->L != static_cast<int>(querySeqLen)) {
+                        Debug(Debug::ERROR) << "Query " << queryKey << " has a different length in the _ss12 database\n";
+                        EXIT(EXIT_FAILURE);
+                    }
                 }
                 qSeq3Di.mapSequence(id, queryKey, querySeq3Di21, querySeqLen);
                 qSeqAA.mapSequence(id, queryKey, querySeqAA, querySeqLen);
@@ -488,8 +495,7 @@ int structurealign(int argc, const char **argv, const Command& command) {
                 structureSmithWaterman.ssw_init(&qSeqAA, &qSeq3Di, tinySubMatAA, tinySubMat3Di, &subMatAA,
                                                use12StScoring ? qSeq12St.get() : NULL, use12StScoring ? tinySubMat12St : NULL,
                                                use12StScoring ? static_cast<const BaseMatrix *>(subMat12St) : NULL);
-                const bool useReverseScoreForThisQuery = par.useReverseScore;
-                if (useReverseScoreForThisQuery) {
+                if (par.useReverseScore) {
                     qSeq3Di.reverse();
                     qSeqAA.reverse();
                     if (use12StScoring) {
