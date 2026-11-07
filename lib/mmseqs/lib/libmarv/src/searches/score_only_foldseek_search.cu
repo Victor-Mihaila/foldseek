@@ -21,6 +21,7 @@
 #include <thrust/iterator/transform_output_iterator.h>
 #include <thrust/iterator/zip_iterator.h>
 #include <thrust/logical.h>
+#include <thrust/remove.h>
 #include <thrust/merge.h>
 
 #if defined(__CUDACC__)
@@ -48,6 +49,16 @@ namespace cub = hipcub;
 
 #include "../namespace.hpp"
 LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
+
+    //true for kernel outputs that do not score above the last (worst) entry of a full top N
+    struct ScoreNotAboveTopNLast{
+        const int* lastTopNScore;
+        template<class Tuple>
+        __device__
+        bool operator()(const Tuple& t) const{
+            return thrust::get<0>(t) <= *lastTopNScore;
+        }
+    };
 
 
 
@@ -938,6 +949,23 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
         const int numGpus = deviceIds.size();
             
         auto& ws = *workingSets[gpu];
+        if(ws.kernelOutputArrayUsedSize[queryIndex] > 0 && topNSize > 0 && resultSizePerQueryPerGpu[queryIndex][gpu] == topNSize){
+            //the top N is full and ordered by descending score, then ascending id. kernel outputs come from later db sequences,
+            //so they have larger ids than every top N entry and lose score ties against it: only outputs scoring above the last
+            //top N entry can enter. dropping the others (order-preserving) before the sort leaves the merged top N unchanged
+            CUDACHECK(cudaSetDevice(deviceIds[gpu]));
+            auto outputs = thrust::make_zip_iterator(
+                ws.getKernelOutputArrayScores(queryIndex),
+                ws.getKernelOutputArrayIndices(queryIndex)
+            );
+            auto keptEnd = thrust::remove_if(
+                thrust::cuda::par_nosync(thrust_async_allocator<char>(stream)).on(stream),
+                outputs,
+                outputs + ws.kernelOutputArrayUsedSize[queryIndex],
+                ScoreNotAboveTopNLast{ws.getTopN_scores(queryIndex).data() + topNSize - 1}
+            );
+            ws.kernelOutputArrayUsedSize[queryIndex] = keptEnd - outputs;
+        }
         if(ws.kernelOutputArrayUsedSize[queryIndex] > 0){
             CUDACHECK(cudaSetDevice(deviceIds[gpu]));
 
