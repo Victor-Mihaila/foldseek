@@ -745,6 +745,8 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
                 {
                     SORT_PARALLEL(shortResults.begin(), shortResults.end(), hit_t::compareHitsByScoreAndId);
                     rescoreCount = std::min(topNAux, shortResults.size());
+                    // only the top N can carry the aux score; the GPU returns no others either
+                    shortResults.resize(rescoreCount);
                 }
 #pragma omp barrier
                 // add the aux channel to the top-K on the best primary diagonal
