@@ -493,6 +493,34 @@ static int scoreAuxOnDiagonal(const unsigned char *qAux, int qLen,
     return maxAux;
 }
 
+// Same as scoreAuxOnDiagonal for a profile query: the aux score of a cell is the query's 12-state
+// profile column at the target's aux state (profile12St is aux-state-major, qLen columns), which is
+// what the GPU diagonal rescore reads from its 12-state PSSM.
+static int scoreAuxProfileOnDiagonal(const int8_t *profile12St, int qLen,
+                                      const unsigned char *tAux, int tLen, int diagonal) {
+    if (qLen <= 0 || tLen <= 0) {
+        return 0;
+    }
+    int q = (diagonal > 0) ? diagonal : 0;
+    int s = (diagonal < 0) ? -diagonal : 0;
+    if (q >= qLen || s >= tLen) {
+        return 0;
+    }
+    const int cells = std::min(qLen - q, tLen - s);
+    int segScore = 0;
+    int maxAux = 0;
+    for (int k = 0; k < cells; k++) {
+        segScore += profile12St[(size_t)tAux[s + k] * qLen + (q + k)];
+        if (segScore < 0) {
+            segScore = 0;
+        }
+        if (segScore > maxAux) {
+            maxAux = segScore;
+        }
+    }
+    return maxAux;
+}
+
 void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAux, int8_t * tinySubMat,
                     DBReader<unsigned int> * qdbr, DBReader<unsigned int> * tdbr,
                     SequenceLookup * sequenceLookup, bool sameDB, DBWriter & resultWriter, EvalueComputation * evaluer,
@@ -506,18 +534,27 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
     // channel to those on their best primary diagonal, re-rank, then truncate to --max-seqs.
     // Only the top N can gain the aux term, so N is what decides how far down the primary
     // ranking the aux channel is still able to promote a hit.
-    // The target DB must be packed and aux scoring on, and the *query* must carry the aux
-    // channel too, which profile queries do not.
+    // The target DB must be packed and aux scoring on, and the query must carry the aux channel:
+    // its own aux states for a sequence query, the 12-state profile next to it (<query>12, as on
+    // the GPU) for a profile query.
     const bool queryHasAux = (Sequence::getAuxInfo(querySeqType) != NULL)
                              && (Sequence::getAuxInfo(querySeqType)->auxRemap != NULL);
     const bool targetHasAux = (Sequence::getAuxInfo(targetSeqType) != NULL)
                               && (Sequence::getAuxInfo(targetSeqType)->auxRemap != NULL);
-    const bool useAux = (subMatAux != NULL) && queryHasAux && targetHasAux
-                         && (alignmentMode == 0)
-                         && (Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE) == false);
+    const bool isProfileQuery = Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE);
+    DBReader<DBKeyType> *q12StProfileDbr = NULL;
+    if (subMatAux != NULL && targetHasAux && alignmentMode == 0 && isProfileQuery
+        && FileUtil::fileExists((par.db1 + "12.dbtype").c_str())) {
+        q12StProfileDbr = new DBReader<DBKeyType>((par.db1 + "12").c_str(), (par.db1 + "12.index").c_str(), par.threads,
+                                                  DBReader<DBKeyType>::USE_INDEX | DBReader<DBKeyType>::USE_DATA);
+        q12StProfileDbr->open(DBReader<DBKeyType>::NOSORT);
+        Debug(Debug::INFO) << "Using 12-state query profile " << (par.db1 + "12") << " for the CPU ungapped prefilter\n";
+    }
+    const bool useAux = (subMatAux != NULL) && targetHasAux && (alignmentMode == 0)
+                         && (isProfileQuery ? (q12StProfileDbr != NULL) : queryHasAux);
     if (subMatAux != NULL && useAux == false) {
         Debug(Debug::INFO) << "aux channel unavailable on the CPU ungapped prefilter "
-                           << "(needs a non-profile query with the aux channel and --alignment-mode 0); "
+                           << "(needs the query's aux channel or its 12-state profile, and --alignment-mode 0); "
                            << "scoring the primary alphabet only\n";
     }
     const size_t topNAux = useAux ? AUX_RESCORE_TOP_N : 0;
@@ -536,6 +573,9 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
         std::vector<hit_t> threadShortResults;
         Sequence qSeq(par.maxSeqLen, querySeqType, subMat, 0, false, par.compBiasCorrection);
         Sequence tSeq(par.maxSeqLen, targetSeqType, subMat, 0, false, par.compBiasCorrection);
+        Sequence *seq12St = (q12StProfileDbr != NULL)
+            ? new Sequence(par.maxSeqLen, Parameters::DBTYPE_HMM_PROFILE, subMatAux, 0, false, false, false) : NULL;
+        const int8_t *qProfile12St = NULL;
         SmithWaterman aligner(par.maxSeqLen, subMat->alphabetSize,
                               par.compBiasCorrection, par.compBiasCorrectionScale, NULL);
         // A packed DB carries no mask of its own -- masking it at write time would destroy the
@@ -553,6 +593,19 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
             unsigned int querySeqLen = qdbr->getSeqLen(id);
 
             qSeq.mapSequence(id, queryKey, querySeqData, querySeqLen);
+            qProfile12St = NULL;
+            if (seq12St != NULL) {
+                const size_t id12 = q12StProfileDbr->getId(queryKey);
+                if (id12 != DB_ENTRY_NOT_FOUND) {
+                    seq12St->mapSequence(id12, queryKey, q12StProfileDbr->getData(id12, thread_idx), q12StProfileDbr->getSeqLen(id12));
+                }
+                if (id12 != DB_ENTRY_NOT_FOUND && seq12St->L == qSeq.L) {
+                    qProfile12St = seq12St->getAlignmentProfile();
+                } else if (thread_idx == 0) {
+                    Debug(Debug::WARNING) << "No matching 12-state profile for query " << queryKey
+                                          << "; scoring its 12-state channel as 0\n";
+                }
+            }
 //            qSeq.printProfileStatePSSM();
             if(Parameters::isEqualDbtype(qSeq.getSeqType(), Parameters::DBTYPE_HMM_PROFILE) ){
                 aligner.ssw_init(&qSeq, qSeq.getAlignmentProfile(), subMat);
@@ -692,10 +745,20 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
                     } else {
                         tSeq.mapSequence(tId, shortResults[i].seqId, sequenceLookup->getSequence(tId));
                     }
-                    if (tSeq.numSequenceAux == NULL || qSeq.numSequenceAux == NULL) {
+                    if (tSeq.numSequenceAux == NULL) {
                         continue;
                     }
                     const int diagonal = (int)(short)shortResults[i].diagonal;
+                    if (isProfileQuery) {
+                        if (qProfile12St != NULL) {
+                            shortResults[i].prefScore += scoreAuxProfileOnDiagonal(
+                                    qProfile12St, qSeq.L, tSeq.numSequenceAux, tSeq.L, diagonal);
+                        }
+                        continue;
+                    }
+                    if (qSeq.numSequenceAux == NULL) {
+                        continue;
+                    }
                     shortResults[i].prefScore += scoreAuxOnDiagonal(
                             qSeq.numSequenceAux, qSeq.L,
                             tSeq.numSequenceAux, tSeq.L,
@@ -735,6 +798,11 @@ void runFilterOnCpu(Parameters & par, BaseMatrix * subMat, BaseMatrix * subMatAu
             }
 #pragma omp barrier
         }
+        delete seq12St;
+    }
+    if (q12StProfileDbr != NULL) {
+        q12StProfileDbr->close();
+        delete q12StProfileDbr;
     }
 }
 
