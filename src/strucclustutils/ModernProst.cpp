@@ -5,9 +5,6 @@
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
 #include "gguf.h"
-#ifdef GGML_USE_CUDA
-#include "ggml-cuda.h"
-#endif
 
 #include <cmath>
 #include <cstring>
@@ -119,21 +116,14 @@ ModernProstModel::ModernProstModel(const std::string & gguf_path, const std::str
         }
     }
 
-    backend = nullptr;
-#ifdef GGML_USE_CUDA
-    if (device != "cpu") {
-        backend = ggml_backend_cuda_init(0);
-        if (backend == nullptr) {
-            fprintf(stderr, "ModernProst: CUDA init failed, falling back to CPU\n");
-        }
-    }
-#else
-    (void) device;
-#endif
-    if (backend == nullptr) {
+    if (device.empty() || device == "cpu" || device == "CPU") {
         backend = ggml_backend_cpu_init();
         gpu = false;
     } else {
+        ggml_backend_dev_t dev = ggml_backend_dev_by_name(device.c_str());
+        if (dev == nullptr) throw std::runtime_error("ModernProst: no ggml device named " + device);
+        backend = ggml_backend_dev_init(dev, nullptr);
+        if (backend == nullptr) throw std::runtime_error("ModernProst: cannot init backend for " + device);
         gpu = true;
     }
 
@@ -815,4 +805,16 @@ bool ModernProst::predict_profiles_many(const std::vector<std::string> & seqs,
         }
     }
     return true;
+}
+
+std::vector<std::string> ModernProstModel::getGpuDevices() {
+    std::vector<std::string> devices;
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        const enum ggml_backend_dev_type type = ggml_backend_dev_type(dev);
+        if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            devices.push_back(ggml_backend_dev_name(dev));
+        }
+    }
+    return devices;
 }

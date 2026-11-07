@@ -44,7 +44,9 @@ struct ModernProstLayer {
 
 class ModernProstModel {
 public:
+    // device: "cpu" or a ggml device name (e.g. "CUDA0", see getGpuDevices)
     ModernProstModel(const std::string & gguf_path, const std::string & device);
+    static std::vector<std::string> getGpuDevices();
     ~ModernProstModel();
     ModernProstModel(const ModernProstModel &) = delete;
     ModernProstModel & operator=(const ModernProstModel &) = delete;

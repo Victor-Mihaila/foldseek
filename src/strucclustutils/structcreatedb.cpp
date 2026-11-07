@@ -566,21 +566,35 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
         const std::string ss12Db  = outputName + "_ss12";
         const std::string aaTmp   = outputName + "_aaprof";
         const int profType = Parameters::DBTYPE_HMM_PROFILE;
+        // as for ProstT5: one thread per CUDA device with --gpu 1
+        std::vector<std::string> devices;
+        if (par.gpu == 1) {
+            std::vector<std::string> gpuDevices = ModernProstModel::getGpuDevices();
+            for (size_t i = 0; i < gpuDevices.size(); i++) {
+                if (gpuDevices[i].find("CUDA") != std::string::npos) {
+                    devices.push_back(gpuDevices[i]);
+                }
+            }
+            if (devices.empty()) {
+                Debug(Debug::ERROR) << "No GPU devices found\n";
+                reader.close();
+                return EXIT_FAILURE;
+            }
+        }
         {
             DBWriter wSs  (ssDb.c_str(),   (ssDb   + ".index").c_str(), par.threads, par.compressed, profType);
             DBWriter wSs12(ss12Db.c_str(), (ss12Db + ".index").c_str(), par.threads, par.compressed, profType);
             DBWriter wAA  (aaTmp.c_str(),  (aaTmp  + ".index").c_str(), par.threads, par.compressed, profType);
             wSs.open(); wSs12.open(); wAA.open();
             Debug::Progress progress(reader.getSize());
-            const std::string device = par.gpu == 1 ? "cuda" : "cpu";
-            const int mpThreads = par.gpu == 1 ? 1 : par.threads;
+            const int mpThreads = par.gpu == 1 ? (int) devices.size() : par.threads;
 #pragma omp parallel num_threads(mpThreads)
             {
                 int thread_idx = 0;
 #ifdef OPENMP
                 thread_idx = omp_get_thread_num();
 #endif
-                ModernProstModel model(par.modernprostModel, device);
+                ModernProstModel model(par.modernprostModel, par.gpu == 1 ? devices[thread_idx] : "cpu");
                 ModernProst context(model, 1);
                 std::vector<uint8_t> r3, r12, rAA;
                 const size_t blockSize = par.gpu == 1 ? (size_t) 32768
