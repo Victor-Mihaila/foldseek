@@ -46,12 +46,22 @@ Sequence::Sequence(size_t maxLen, int seqType, const BaseMatrix *subMat, const u
     this->numConsensusSequence = (unsigned char*)malloc(maxLen + 1);
     this->numSequenceAux = NULL;
     this->activePrimaryRemap = NULL;
+    this->rawPrimaryRemap = NULL;
     this->activeAuxRemap = NULL;
     // Check if this sequence type has a registered split
     const SeqAuxInfo *auxInfo = getAuxInfo(seqType);
     if (auxInfo != NULL) {
         this->activePrimaryRemap = auxInfo->primaryRemap;
         this->activeAuxRemap = auxInfo->auxRemap;
+        this->rawPrimaryRemap = this->activePrimaryRemap;
+        // packed DB bytes decode to full-alphabet indices; a reduced alphabet (e.g. linclust's) groups them
+        // like aa2num groups letters on unpacked DBs
+        if (this->activePrimaryRemap != NULL && subMat != NULL) {
+            for (size_t i = 0; i < 256; i++) {
+                reducedPrimaryRemap[i] = subMat->reduceIndex(this->activePrimaryRemap[i]);
+            }
+            this->rawPrimaryRemap = reducedPrimaryRemap;
+        }
         if (this->activeAuxRemap != NULL) {
             this->numSequenceAux = (unsigned char*)malloc(maxLen + 1);
         }
@@ -384,10 +394,10 @@ void Sequence::mapSequence(const char * sequence, unsigned int dataLen){
         }
         maxLen = dataLen;
     }
-    if (activePrimaryRemap != NULL) {
+    if (rawPrimaryRemap != NULL) {
         for (unsigned int i = 0; i < dataLen; i++) {
             unsigned char raw = static_cast<unsigned char>(sequence[i]);
-            numSequence[i] = activePrimaryRemap[raw];
+            numSequence[i] = rawPrimaryRemap[raw];
         }
         if (activeAuxRemap != NULL) {
             for (unsigned int i = 0; i < dataLen; i++) {

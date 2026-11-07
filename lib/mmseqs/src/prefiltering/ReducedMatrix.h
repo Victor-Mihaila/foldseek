@@ -10,6 +10,11 @@ class ReducedMatrix : public BaseMatrix {
                       size_t reducedAlphabetSize, float bitFactor);
         virtual ~ReducedMatrix();
 
+        unsigned char reduceIndex(unsigned char origIndex) const {
+                const char letter = (static_cast<size_t>(origIndex) < origAlphabetSize) ? orig_num2aa[origIndex] : 'X';
+                return this->aa2num[static_cast<unsigned char>(letter)];
+        }
+
         void setupLetterMapping() {
                 for(int letter = 0; letter < UCHAR_MAX; letter++){
                         char upperLetter = toupper(static_cast<char>(letter));
