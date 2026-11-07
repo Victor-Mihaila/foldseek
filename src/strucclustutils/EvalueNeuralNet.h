@@ -15,8 +15,6 @@ class Sequence;
 
 class EvalueNeuralNet {
 private:
-    static constexpr double WINDOWED_EVALUE_CORR_EXPONENT = 0.8559494682342873;
-    static constexpr double WINDOWED_EVALUE_CORR_SCALE = 0.13415799519899208;
     static constexpr double LEGACY_EVALUE_CORR_EXPONENT = 0.32;
     // mode 2: E = scale * N * sqrt(p_q * p_t) * exp(f(u) - f(u_ref)), f(u) = c1 u + c2 u^2, u = log of the shorter of query and
     // target length clipped to [min, max], u_ref = log(ref); scale is the multiplier when the shorter protein has the reference
@@ -27,10 +25,6 @@ private:
     static constexpr double LEGACY_12ST_LENGTH_C2 = 0.45780993271377185;
     static constexpr double LEGACY_12ST_LENGTH_MIN = 60.0;
     static constexpr double LEGACY_12ST_LENGTH_MAX = 400.0;
-    static constexpr double WINDOWED_PRED_SLOPE = 0.5142189860343933;
-    static constexpr double WINDOWED_PRED_INTERCEPT = 35.95916748046875;
-    static constexpr double WINDOWED_MIN_LAMBDA = 9.999999747378752e-05;
-    static constexpr float WINDOWED_PROFILE_BIT_FACTOR = 8.0f;
     static constexpr int LEGACY_12ST_FEATURE_SIZE = 35;
     static constexpr float LEGACY_12ST_PROFILE_BIT_FACTOR = 8.0f;
     static constexpr double LEGACY_12ST_LAMBDA_MEAN = 0.05809067;
@@ -47,31 +41,9 @@ private:
     KerasModel encoder;
     Tensor in;
     Tensor out;
-    KerasModel windowedEncoder;
-    Tensor windowedIn;
-    Tensor windowedOut;
 
-    std::vector<int> stateToWindowedIndex;
-    std::vector<float> windowedBackground;
-
-    static float softplus(float x);
-    int predictedAlignmentLength(double score) const;
     void fillLegacy12StComposition(float *dst, const Sequence &seq, const char *alphabet, int alphabetSize, const BaseMatrix *backgroundMat) const;
     std::pair<double, double> predictMuLambdaLegacy12St(const Sequence &seq3Di, const Sequence &seq12St);
-    void fillWindowedComposition(float *dst, const unsigned char *seq, unsigned int seqLen, int end1Based, int spanLen) const;
-    void fillWindowedComposition(float *dst, const Sequence &seq, int end1Based, int spanLen) const;
-    std::pair<double, double> predictMuLambdaWindowed(const unsigned char *querySeq,
-                                                      unsigned int queryLen,
-                                                      int queryEnd1Based,
-                                                      const unsigned char *targetSeq,
-                                                      unsigned int targetLen,
-                                                      int targetEnd1Based,
-                                                      double score);
-    std::pair<double, double> predictMuLambdaWindowed(const Sequence &querySeq,
-                                                      int queryEnd1Based,
-                                                      const Sequence &targetSeq,
-                                                      int targetEnd1Based,
-                                                      double score);
 public:
 
     EvalueNeuralNet(size_t dbResidueCount,
@@ -85,21 +57,8 @@ public:
     std::pair<double, double> predictMuLambda(const unsigned char * seq, unsigned int L);
     std::pair<double, double> predictMuLambda(const Sequence &seq);
     std::pair<double, double> predictMuLambda(const Sequence &seq3Di, const Sequence &seq12St);
-    std::pair<double, double> predictMuLambda(const unsigned char *querySeq,
-                                              unsigned int queryLen,
-                                              int queryEnd1Based,
-                                              const unsigned char *targetSeq,
-                                              unsigned int targetLen,
-                                              int targetEnd1Based,
-                                              double score);
-    std::pair<double, double> predictMuLambda(const Sequence &querySeq,
-                                              int queryEnd1Based,
-                                              const Sequence &targetSeq,
-                                              int targetEnd1Based,
-                                              double score);
-    bool usesWindowedModel() const { return mode == LocalParameters::EVALUE_NN_MODE_WINDOW; }
     bool usesLegacy12StModel() const { return mode == LocalParameters::EVALUE_NN_MODE_LEGACY_12ST; }
-    double activeLogDbCount() const { return (usesWindowedModel() || usesLegacy12StModel()) ? logDbSequenceCount : logDbResidueCount; }
+    double activeLogDbCount() const { return usesLegacy12StModel() ? logDbSequenceCount : logDbResidueCount; }
 
     double computePvalue(double score, double lambda_, double mu) {
         double h = lambda_ * (score - mu);
@@ -125,9 +84,6 @@ public:
         }
 	double dbSizeTimesLogPVal = logPVal + activeLogDbCount();
 	double evalue = exp(dbSizeTimesLogPVal);
-        if (usesWindowedModel()) {
-            return WINDOWED_EVALUE_CORR_SCALE * pow(evalue, WINDOWED_EVALUE_CORR_EXPONENT);
-        }
         if (usesLegacy12StModel()) {
             double u = log(std::min(std::max(static_cast<double>(std::min(queryLen, targetLen)), LEGACY_12ST_LENGTH_MIN), LEGACY_12ST_LENGTH_MAX));
             double uRef = log(LEGACY_12ST_LENGTH_REF);

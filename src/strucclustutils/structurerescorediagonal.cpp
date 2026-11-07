@@ -126,13 +126,7 @@ Matcher::result_t ungappedAlignStructure(Sequence & qSeqAA, Sequence & qSeq3Di, 
         dbStartPos = res.startPos + distanceToDiagonal;
         dbEndPos = res.endPos + distanceToDiagonal;
     }
-    std::pair<double, double> muLambda = queryMuLambda;
-    if (evaluer.usesWindowedModel()) {
-        muLambda = evaluer.predictMuLambda(qSeq3Di, qEndPos + 1,
-                                           tSeq3Di, dbEndPos + 1,
-                                           score);
-    }
-    double evalue = evaluer.computeEvalueCorr(score, muLambda.first, muLambda.second, qSeqAA.L, tSeqAA.L, targetMuLambda);
+    double evalue = evaluer.computeEvalueCorr(score, queryMuLambda.first, queryMuLambda.second, qSeqAA.L, tSeqAA.L, targetMuLambda);
     unsigned int alnLength = Matcher::computeAlnLength(qStartPos, qEndPos, dbStartPos, dbEndPos);
     if (par.addBacktrace) {
         backtrace.append(alnLength, 'M');
@@ -193,7 +187,11 @@ int structureungappedalign(int argc, const char **argv, const Command& command) 
     }
     bool queryHas12St = query3Di12St || (q12StDbr != NULL);
     bool use12StScoring = par.useAuxScoring && queryHas12St && target3Di12St;
-    bool use12StEvalue = par.evalueNNMode == LocalParameters::EVALUE_NN_MODE_LEGACY_12ST;
+    // automatic: the Foldseek 2 NN when the 12-state alphabet is scored, the Foldseek 1 NN otherwise
+    const int evalueNNMode = (par.evalueNNMode == LocalParameters::EVALUE_NN_MODE_AUTO)
+        ? (use12StScoring ? LocalParameters::EVALUE_NN_MODE_LEGACY_12ST : LocalParameters::EVALUE_NN_MODE_LEGACY)
+        : par.evalueNNMode;
+    bool use12StEvalue = evalueNNMode == LocalParameters::EVALUE_NN_MODE_LEGACY_12ST;
     if (use12StEvalue && !queryHas12St) {
         Debug(Debug::ERROR) << "--evalue-nn-mode 2 requires a query 12-state alphabet in the packed _ss DB or a _ss12 DB\n";
         EXIT(EXIT_FAILURE);
@@ -313,7 +311,7 @@ int structureungappedalign(int argc, const char **argv, const Command& command) 
         EvalueNeuralNet evaluer(tAADbr->sequenceReader->getAminoAcidDBSize(),
                                 tAADbr->sequenceReader->getSize(),
                                 &subMat3Di,
-                                par.evalueNNMode,
+                                evalueNNMode,
                                 use12StScoring,
                                 par.evalue12StProfileComp != 0,
                                 subMat12St);
@@ -428,12 +426,9 @@ int structureungappedalign(int argc, const char **argv, const Command& command) 
                 }
                 qRevSeq3Di.mapSequence(id, queryKey, querySeq3Di21, querySeqLen);
                 qRevSeqAA.mapSequence(id, queryKey, querySeqAA, querySeqLen);
-                std::pair<double, double> muLambda = std::make_pair(0.0, 0.0);
-                if (!evaluer.usesWindowedModel()) {
-                    muLambda = evaluer.usesLegacy12StModel()
-                        ? evaluer.predictMuLambda(qSeq3Di, *qSeq12StForEvalue)
-                        : evaluer.predictMuLambda(qSeq3Di);
-                }
+                std::pair<double, double> muLambda = evaluer.usesLegacy12StModel()
+                    ? evaluer.predictMuLambda(qSeq3Di, *qSeq12StForEvalue)
+                    : evaluer.predictMuLambda(qSeq3Di);
                 structureSmithWaterman.ssw_init(&qSeqAA, &qSeq3Di, tinySubMatAA, tinySubMat3Di, &subMatAA,
                                                use12StScoring ? qSeq12St.get() : NULL, use12StScoring ? tinySubMat12St : NULL,
                                                use12StScoring ? static_cast<const BaseMatrix *>(subMat12St) : NULL);

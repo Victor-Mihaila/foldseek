@@ -88,14 +88,8 @@ int alignStructure(StructureSmithWaterman & structureSmithWaterman,
     if(hasLowerCoverage){
         return -1;
     }
-    std::pair<double, double> muLambda = queryMuLambda;
-    if (evaluer.usesWindowedModel()) {
-        muLambda = evaluer.predictMuLambda(qSeq3Di, align.qEndPos1 + 1,
-                                           tSeq3Di, align.dbEndPos1 + 1,
-                                           align.score1);
-    }
     // we can already stop if this e-value isn't good enough, it wont be any better in the next step
-    align.evalue = evaluer.computeEvalueCorr(align.score1, muLambda.first, muLambda.second, querySeqLen, targetSeqLen, targetMuLambda);
+    align.evalue = evaluer.computeEvalueCorr(align.score1, queryMuLambda.first, queryMuLambda.second, querySeqLen, targetSeqLen, targetMuLambda);
     bool hasLowerEvalue = align.evalue > par.evalThr;
     if(hasLowerEvalue){
         return -1;
@@ -113,12 +107,7 @@ int alignStructure(StructureSmithWaterman & structureSmithWaterman,
     } else {
         score = rawSmithWatermanScore;
     }
-    if (evaluer.usesWindowedModel()) {
-        muLambda = evaluer.predictMuLambda(qSeq3Di, align.qEndPos1 + 1,
-                                           tSeq3Di, align.dbEndPos1 + 1,
-                                           score);
-    }
-    align.evalue = evaluer.computeEvalueCorr(score, muLambda.first, muLambda.second, querySeqLen, targetSeqLen, targetMuLambda);
+    align.evalue = evaluer.computeEvalueCorr(score, queryMuLambda.first, queryMuLambda.second, querySeqLen, targetSeqLen, targetMuLambda);
     hasLowerEvalue = align.evalue > par.evalThr;
     if (hasLowerEvalue) {
         return -1;
@@ -254,7 +243,11 @@ int structurealign(int argc, const char **argv, const Command& command) {
     }
     bool queryHas12St = query3Di12St || (q12StDbr != NULL);
     bool use12StScoring = par.useAuxScoring && queryHas12St && target3Di12St;
-    bool use12StEvalue = par.evalueNNMode == LocalParameters::EVALUE_NN_MODE_LEGACY_12ST;
+    // automatic: the Foldseek 2 NN when the 12-state alphabet is scored, the Foldseek 1 NN otherwise
+    const int evalueNNMode = (par.evalueNNMode == LocalParameters::EVALUE_NN_MODE_AUTO)
+        ? (use12StScoring ? LocalParameters::EVALUE_NN_MODE_LEGACY_12ST : LocalParameters::EVALUE_NN_MODE_LEGACY)
+        : par.evalueNNMode;
+    bool use12StEvalue = evalueNNMode == LocalParameters::EVALUE_NN_MODE_LEGACY_12ST;
     if (use12StEvalue && !queryHas12St) {
         Debug(Debug::ERROR) << "--evalue-nn-mode 2 requires a query 12-state alphabet in the packed _ss DB or a _ss12 DB\n";
         EXIT(EXIT_FAILURE);
@@ -400,7 +393,7 @@ int structurealign(int argc, const char **argv, const Command& command) {
         EvalueNeuralNet evaluer(tAADbr.sequenceReader->getAminoAcidDBSize(),
                                 tAADbr.sequenceReader->getSize(),
                                 &subMat3Di,
-                                par.evalueNNMode,
+                                evalueNNMode,
                                 use12StScoring,
                                 par.evalue12StProfileComp != 0,
                                 subMat12St);
@@ -531,12 +524,9 @@ int structurealign(int argc, const char **argv, const Command& command) {
                         lddtcalculator->initQuery(qSeq3Di.L, queryCaData, &queryCaData[qSeq3Di.L], &queryCaData[qSeq3Di.L+qSeq3Di.L]);
                     }
                 }
-                std::pair<double, double> muLambda = std::make_pair(0.0, 0.0);
-                if (!evaluer.usesWindowedModel()) {
-                    muLambda = evaluer.usesLegacy12StModel()
-                        ? evaluer.predictMuLambda(qSeq3Di, *qSeq12StForEvalue)
-                        : evaluer.predictMuLambda(qSeq3Di);
-                }
+                std::pair<double, double> muLambda = evaluer.usesLegacy12StModel()
+                    ? evaluer.predictMuLambda(qSeq3Di, *qSeq12StForEvalue)
+                    : evaluer.predictMuLambda(qSeq3Di);
                 if (use12StScoring && structureSmithWaterman.isProfileSearch() == false &&
                     q12StDbr != NULL &&
                     Parameters::isEqualDbtype(q12StDbr->getDbtype(), Parameters::DBTYPE_HMM_PROFILE)) {
