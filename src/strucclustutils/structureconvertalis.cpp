@@ -452,7 +452,7 @@ int structureconvertalis(int argc, const char **argv, const Command &command) {
         target3DiProfile = Parameters::isEqualDbtype(t3DiDbr->sequenceReader->getDbtype(), Parameters::DBTYPE_HMM_PROFILE);
         query3Di12St = StructureUtil::is3Di12StDb(q3DiDbr->sequenceReader->getDbtype());
         target3Di12St = StructureUtil::is3Di12StDb(t3DiDbr->sequenceReader->getDbtype());
-        if (evaluer == NULL) {
+        if (needEvaluer && evaluer == NULL) {
             evaluer = new EvalueComputation(t3DiDbr->sequenceReader->getAminoAcidDBSize(), subMat, gapOpen, gapExtend);
         }
         if (query3Di12St || target3Di12St) {
@@ -938,11 +938,16 @@ R"html(<!DOCTYPE html>
                                     case Parameters::OUTFMT_ALNLEN:
                                         result.append(SSTR(alnLen));
                                         break;
-                                    case Parameters::OUTFMT_RAW: {
-                                        const int rawScore = (res.queryOrfStartPos != -1) ? res.queryOrfStartPos : res.score;
-                                        result.append(SSTR(rawScore));
+                                    case Parameters::OUTFMT_RAW:
+                                        if (isLolAlign) {
+                                            // LoL-align: score is prob*10000, not a bit score; emit the probability.
+                                            char lbuf[32];
+                                            int n = snprintf(lbuf, sizeof(lbuf), "%.4f", res.score / 10000.0f);
+                                            result.append(lbuf, n);
+                                        } else {
+                                            result.append(SSTR(static_cast<int>(evaluer->computeRawScoreFromBitScore(res.score) + 0.5)));
+                                        }
                                         break;
-                                    }
                                     case Parameters::OUTFMT_BITS:
                                         if (isLolAlign) {
                                             char lbuf[32];
@@ -1314,7 +1319,7 @@ R"html(<!DOCTYPE html>
                     }
                     case Parameters::FORMAT_ALIGNMENT_SAM: {
                         bool strand = res.qEndPos > res.qStartPos;
-                        int rawScore = (res.queryOrfStartPos != -1) ? res.queryOrfStartPos : res.score;
+                        int rawScore = static_cast<int>(evaluer->computeRawScoreFromBitScore(res.score) + 0.5);
                         uint32_t mapq = -4.343 * log(exp(static_cast<double>(-rawScore)));
                         mapq = (uint32_t) (mapq + 4.99);
                         mapq = mapq < 254 ? mapq : 254;

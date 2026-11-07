@@ -158,8 +158,7 @@ int alignStructure(StructureSmithWaterman & structureSmithWaterman,
     }
     align.score1 = score;
     res = Matcher::result_t(tSeqAA.getDbKey(), align.score1, align.qCov, align.tCov, seqId, align.evalue, alnLength,
-                            align.qStartPos1, align.qEndPos1, querySeqLen, align.dbStartPos1, align.dbEndPos1, targetSeqLen,
-                            rawSmithWatermanScore, -1, -1, -1, backtrace);
+                            align.qStartPos1, align.qEndPos1, querySeqLen, align.dbStartPos1, align.dbEndPos1, targetSeqLen, backtrace);
     return 0;
 }
 
@@ -686,9 +685,8 @@ int structurealign(int argc, const char **argv, const Command& command) {
                     SORT_SERIAL(alignmentResult.begin(), alignmentResult.end(), Matcher::compareHits);
                 }
             }
-            const bool addRawScoreColumns = par.useReverseScore && par.addBacktrace;
             for (size_t result = 0; result < alignmentResult.size(); result++) {
-                size_t len = Matcher::resultToBuffer(buffer, alignmentResult[result], par.addBacktrace, true, addRawScoreColumns);
+                size_t len = Matcher::resultToBuffer(buffer, alignmentResult[result], par.addBacktrace);
                 resultBuffer.append(buffer, len);
             }
             dbw.writeData(resultBuffer.c_str(), resultBuffer.length(), queryKey, thread_idx);
