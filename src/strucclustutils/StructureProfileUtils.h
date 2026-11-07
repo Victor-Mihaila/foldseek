@@ -9,8 +9,6 @@ struct ResolvedStructureProfileDbs {
     std::string ssTargetDb;
     std::string ss12InputDb;
     std::string ss12TargetDb;
-    bool removeSplitQuery;
-    bool removeSplitTarget;
 };
 
 ResolvedStructureProfileDbs resolveStructureProfileDbs(LocalParameters &par,

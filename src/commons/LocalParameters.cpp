@@ -275,6 +275,7 @@ LocalParameters::LocalParameters() :
     result2structprofilebase.push_back(&PARAM_COMPRESSED);
     result2structprofilebase.push_back(&PARAM_V);
     result2structprofilebase.push_back(&PARAM_PROFILE_OUTPUT_MODE);
+    result2structprofilebase.push_back(&PARAM_PROFILE_AUX_CHANNEL);
     //result2structprofile
     result2structprofile = result2structprofilebase;
     result2structprofile.push_back(&PARAM_PROFILE_LOWCONF_MEMBERS);

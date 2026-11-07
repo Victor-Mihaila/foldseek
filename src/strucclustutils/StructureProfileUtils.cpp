@@ -98,48 +98,6 @@ std::string createProfileParameters(LocalParameters &par,
     return profilePar;
 }
 
-void split3Di12StDb(const std::string &inputDb,
-                    const std::string &out3DiDb,
-                    const std::string &out12StDb,
-                    LocalParameters &par) {
-    DBReader<unsigned int> reader(inputDb.c_str(), (inputDb + ".index").c_str(), 1,
-                                  DBReader<unsigned int>::USE_INDEX | DBReader<unsigned int>::USE_DATA);
-    reader.open(DBReader<unsigned int>::NOSORT);
-
-    std::string mat3Di = getSerializedMatrix(par, "3di.out");
-    std::string mat12St = getSerializedMatrix(par, "12st.out");
-    if (mat3Di.empty() || mat12St.empty()) {
-        Debug(Debug::ERROR) << "Cannot find 3di.out or 12st.out substitution matrix\n";
-        EXIT(EXIT_FAILURE);
-    }
-    SubstitutionMatrix subMat3Di(mat3Di.c_str(), 2.0, 0.0);
-    SubstitutionMatrix subMat12St(mat12St.c_str(), par.submat12stScale, 0.0);
-
-    DBWriter out3Di(out3DiDb.c_str(), (out3DiDb + ".index").c_str(), 1, false, Parameters::DBTYPE_AMINO_ACIDS);
-    DBWriter out12St(out12StDb.c_str(), (out12StDb + ".index").c_str(), 1, false, Parameters::DBTYPE_AMINO_ACIDS);
-    out3Di.open();
-    out12St.open();
-
-    std::vector<char> seq3Di;
-    std::vector<char> seq12St;
-    for (size_t id = 0; id < reader.getSize(); id++) {
-        size_t seqLen = reader.getSeqLen(id);
-        char *data = reader.getData(id, 0);
-        StructureUtil::split3Di12St(data, seqLen, seq3Di, seq12St, subMat3Di, subMat12St, false);
-        seq3Di.resize(seqLen + 1);
-        seq12St.resize(seqLen + 1);
-        seq3Di[seqLen] = '\n';
-        seq12St[seqLen] = '\n';
-        unsigned int dbKey = reader.getDbKey(id);
-        out3Di.writeData(seq3Di.data(), seqLen + 1, dbKey, 0);
-        out12St.writeData(seq12St.data(), seqLen + 1, dbKey, 0);
-    }
-
-    out3Di.close(true);
-    out12St.close(true);
-    reader.close();
-}
-
 }
 
 ResolvedStructureProfileDbs resolveStructureProfileDbs(LocalParameters &par,
@@ -147,8 +105,6 @@ ResolvedStructureProfileDbs resolveStructureProfileDbs(LocalParameters &par,
     ResolvedStructureProfileDbs resolved;
     resolved.ssInputDb = par.db1 + "_ss";
     resolved.ssTargetDb = db2NoIndexName + "_ss";
-    resolved.removeSplitQuery = false;
-    resolved.removeSplitTarget = false;
 
     const bool packedInput3Di12St = FileUtil::fileExists((resolved.ssInputDb + ".dbtype").c_str())
         && StructureUtil::is3Di12StDb(FileUtil::parseDbType(resolved.ssInputDb.c_str()));
@@ -160,26 +116,16 @@ ResolvedStructureProfileDbs resolveStructureProfileDbs(LocalParameters &par,
             Debug(Debug::ERROR) << "12-state profile generation for indexed targets is not supported yet.\n";
             EXIT(EXIT_FAILURE);
         }
-
-        if (packedInput3Di12St) {
-            resolved.ssInputDb = par.db4 + "_split_query_ss3di";
-            resolved.ss12InputDb = par.db4 + "_split_query_ss12";
-            split3Di12StDb(par.db1 + "_ss", resolved.ssInputDb, resolved.ss12InputDb, par);
-            resolved.removeSplitQuery = true;
-        }
-
-        if (packedTarget3Di12St) {
-            resolved.ssTargetDb = par.db4 + "_split_target_ss3di";
-            resolved.ss12TargetDb = par.db4 + "_split_target_ss12";
-            split3Di12StDb(db2NoIndexName + "_ss", resolved.ssTargetDb, resolved.ss12TargetDb, par);
-            resolved.removeSplitTarget = true;
-        }
     }
-
-    if (packedInput3Di12St == false
-        && resolved.ss12InputDb.empty()
-        && FileUtil::fileExists((par.db1 + "_ss12.dbtype").c_str())) {
+    // a packed _ss serves both profiles: result2profile reads its 3Di channel, and its 12-state channel with
+    // --profile-aux-channel 1 (create12StateProfileParameters)
+    if (packedInput3Di12St) {
+        resolved.ss12InputDb = resolved.ssInputDb;
+    } else if (FileUtil::fileExists((par.db1 + "_ss12.dbtype").c_str())) {
         resolved.ss12InputDb = par.db1 + "_ss12";
+    }
+    if (packedTarget3Di12St) {
+        resolved.ss12TargetDb = resolved.ssTargetDb;
     }
 
     return resolved;
@@ -221,7 +167,9 @@ std::string create12StateProfileParameters(LocalParameters &par) {
     const std::string matrixAlias = getSerializedMatrix(par, "12st.out", "blosum62.out");
     const MultiParam<NuclAA<int> > gapOpen(NuclAA<int>(11, par.gapOpen.values.nucleotide()));
     const MultiParam<NuclAA<int> > gapExtend(NuclAA<int>(1, par.gapExtend.values.nucleotide()));
-    return createProfileParameters(par,
+    // packed 3Di+12-state sequences are profiled on their 12-state channel
+    par.profileAuxChannel = 1;
+    const std::string params = createProfileParameters(par,
                                    matrixAlias,
                                    MultiParam<PseudoCounts>(PseudoCounts(1.4, 1.4)),
                                    MultiParam<PseudoCounts>(PseudoCounts(1.5, 1.5)),
@@ -234,4 +182,6 @@ std::string create12StateProfileParameters(LocalParameters &par) {
                                    true,
                                    &gapOpen,
                                    &gapExtend);
+    par.profileAuxChannel = 0;
+    return params;
 }

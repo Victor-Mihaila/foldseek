@@ -55,12 +55,6 @@ int result2structprofile(int argc, const char **argv, const Command &command) {
         }
     }
 
-    if (resolved.removeSplitQuery) {
-        cmd.addVariable("REMOVE_SPLIT_QUERY", "1");
-    }
-    if (resolved.removeSplitTarget) {
-        cmd.addVariable("REMOVE_SPLIT_TARGET", "1");
-    }
 
     if (par.profileLowconfMembers == 1) {
         cmd.addVariable("LOWCONF_TARGET_DB", db2NoIndexName.c_str());
