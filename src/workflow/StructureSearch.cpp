@@ -232,7 +232,7 @@ int structuresearch(int argc, const char **argv, const Command &command) {
                 const bool savedUseReverseScore = par.useReverseScore;
                 if (disable12StForThisIteration) {
                     par.useAuxScoring = 0;
-                    par.evalueNNMode = LocalParameters::EVALUE_NN_MODE_LEGACY;
+                    par.evalueNNMode = LocalParameters::EVALUE_NN_MODE_3DI;
                     par.useReverseScore = true;
                 }
                 cmd.addVariable(std::string("ALIGNMENT_PAR_" + SSTR(i)).c_str(), par.createParameterString(par.structurealign).c_str());

@@ -49,8 +49,8 @@ public:
     static const int STRUCTTY_MODE_ALIGN_NEAR = 8;
 
     static const int EVALUE_NN_MODE_AUTO = 0;
-    static const int EVALUE_NN_MODE_LEGACY = 1;
-    static const int EVALUE_NN_MODE_LEGACY_12ST = 2;
+    static const int EVALUE_NN_MODE_3DI = 1;
+    static const int EVALUE_NN_MODE_3DI_12ST = 2;
 
     static const int TMSCORE_THRESHOLD_MODE_ALIGNMENT = 0;
     static const int TMSCORE_THRESHOLD_MODE_QUERY = 1;

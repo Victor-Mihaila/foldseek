@@ -245,9 +245,9 @@ int structurealign(int argc, const char **argv, const Command& command) {
     bool use12StScoring = par.useAuxScoring && queryHas12St && target3Di12St;
     // automatic: the Foldseek 2 NN when the 12-state alphabet is scored, the Foldseek 1 NN otherwise
     const int evalueNNMode = (par.evalueNNMode == LocalParameters::EVALUE_NN_MODE_AUTO)
-        ? (use12StScoring ? LocalParameters::EVALUE_NN_MODE_LEGACY_12ST : LocalParameters::EVALUE_NN_MODE_LEGACY)
+        ? (use12StScoring ? LocalParameters::EVALUE_NN_MODE_3DI_12ST : LocalParameters::EVALUE_NN_MODE_3DI)
         : par.evalueNNMode;
-    bool use12StEvalue = evalueNNMode == LocalParameters::EVALUE_NN_MODE_LEGACY_12ST;
+    bool use12StEvalue = evalueNNMode == LocalParameters::EVALUE_NN_MODE_3DI_12ST;
     if (use12StEvalue && !queryHas12St) {
         Debug(Debug::ERROR) << "--evalue-nn-mode 2 requires a query 12-state alphabet in the packed _ss DB or a _ss12 DB\n";
         EXIT(EXIT_FAILURE);
@@ -394,7 +394,6 @@ int structurealign(int argc, const char **argv, const Command& command) {
                                 tAADbr.sequenceReader->getSize(),
                                 &subMat3Di,
                                 evalueNNMode,
-                                use12StScoring,
                                 par.evalue12StProfileComp != 0,
                                 subMat12St);
         std::vector<Matcher::result_t> alignmentResult;
@@ -442,14 +441,17 @@ int structurealign(int argc, const char **argv, const Command& command) {
         if (queryHas12St) {
             qSeq3Di21Buf.reserve(par.maxSeqLen);
             qSeq12StBuf.reserve(par.maxSeqLen);
-            qSeq12StUnmaskedBuf.reserve(par.maxSeqLen);
             if (use12StScoring || use12StEvalue) {
                 int q12StDbtype = query3Di12St ? Parameters::DBTYPE_AMINO_ACIDS : q12StDbr->getDbtype();
                 const BaseMatrix *q12StMat = (q12StDbtype == Parameters::DBTYPE_HMM_PROFILE)
                     ? static_cast<const BaseMatrix *>(&subMatAA)
                     : static_cast<const BaseMatrix *>(subMat12St);
                 qSeq12St.reset(new Sequence(par.maxSeqLen, q12StDbtype, q12StMat, 0, false, par.compBiasCorrection));
-                qSeq12StUnmasked.reset(new Sequence(par.maxSeqLen, q12StDbtype, q12StMat, 0, false, par.compBiasCorrection));
+            }
+            // the e-value NN takes the unmasked 12-state sequence of packed queries
+            if (use12StEvalue && query3Di12St) {
+                qSeq12StUnmaskedBuf.reserve(par.maxSeqLen);
+                qSeq12StUnmasked.reset(new Sequence(par.maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, subMat12St, 0, false, par.compBiasCorrection));
             }
         }
         if (target3Di12St) {
@@ -487,12 +489,16 @@ int structurealign(int argc, const char **argv, const Command& command) {
                 const char *querySeq3Di21 = querySeq3Di;
                 Sequence *qSeq12StForEvalue = qSeq12St.get();
                 if (query3Di12St) {
-                    if (use12StEvalue && qSeq12StUnmasked) {
+                    if (qSeq12StUnmasked) {
+                        // the e-value NN takes the unmasked 12-state sequence, the alignment the masked one
                         StructureUtil::split3Di12St(querySeq3Di, querySeqLen, qSeq3Di21Buf, qSeq12StUnmaskedBuf, subMat3Di, *subMat12St, false);
                         qSeq12StUnmasked->mapSequence(id, queryKey, qSeq12StUnmaskedBuf.data(), querySeqLen);
                         qSeq12StForEvalue = qSeq12StUnmasked.get();
+                        qSeq12StBuf.assign(qSeq12StUnmaskedBuf.begin(), qSeq12StUnmaskedBuf.begin() + querySeqLen);
+                        StructureUtil::mask12StSeqs(qSeq3Di21Buf.data(), qSeq12StBuf.data(), querySeqLen, true);
+                    } else {
+                        StructureUtil::split3Di12St(querySeq3Di, querySeqLen, qSeq3Di21Buf, qSeq12StBuf, subMat3Di, *subMat12St, true);
                     }
-                    StructureUtil::split3Di12St(querySeq3Di, querySeqLen, qSeq3Di21Buf, qSeq12StBuf, subMat3Di, *subMat12St, true);
                     querySeq3Di21 = qSeq3Di21Buf.data();
                     if (use12StScoring || use12StEvalue) {
                         qSeq12St->mapSequence(id, queryKey, qSeq12StBuf.data(), querySeqLen);
@@ -501,10 +507,6 @@ int structurealign(int argc, const char **argv, const Command& command) {
                     unsigned int query12StId = q12StDbr->sequenceReader->getId(queryKey);
                     char *querySeq12St = q12StDbr->sequenceReader->getData(query12StId, thread_idx);
                     qSeq12St->mapSequence(id, queryKey, querySeq12St, querySeqLen);
-                    if (use12StEvalue && qSeq12StUnmasked && query12StProfileLayout) {
-                        qSeq12StUnmasked->mapSequence(id, queryKey, querySeq12St, querySeqLen);
-                        qSeq12StForEvalue = qSeq12StUnmasked.get();
-                    }
                 }
                 qSeq3Di.mapSequence(id, queryKey, querySeq3Di21, querySeqLen);
                 qSeqAA.mapSequence(id, queryKey, querySeqAA, querySeqLen);
@@ -524,9 +526,9 @@ int structurealign(int argc, const char **argv, const Command& command) {
                         lddtcalculator->initQuery(qSeq3Di.L, queryCaData, &queryCaData[qSeq3Di.L], &queryCaData[qSeq3Di.L+qSeq3Di.L]);
                     }
                 }
-                std::pair<double, double> muLambda = evaluer.usesLegacy12StModel()
-                    ? evaluer.predictMuLambda(qSeq3Di, *qSeq12StForEvalue)
-                    : evaluer.predictMuLambda(qSeq3Di);
+                std::pair<double, double> muLambda = evaluer.uses12StModel()
+                    ? evaluer.predictMuLambda12St(qSeq3Di, *qSeq12StForEvalue)
+                    : evaluer.predictMuLambda(qSeq3Di.numSequence, qSeq3Di.L);
                 if (use12StScoring && structureSmithWaterman.isProfileSearch() == false &&
                     q12StDbr != NULL &&
                     Parameters::isEqualDbtype(q12StDbr->getDbtype(), Parameters::DBTYPE_HMM_PROFILE)) {
@@ -592,8 +594,8 @@ int structurealign(int argc, const char **argv, const Command& command) {
                     }
                     std::pair<double, double> targetMuLambda;
                     const std::pair<double, double> *targetMuLambdaPtr = NULL;
-                    if (evaluer.usesLegacy12StModel() && tSeq12St) {
-                        targetMuLambda = evaluer.predictMuLambda(tSeq3Di, *tSeq12St);
+                    if (evaluer.uses12StModel() && tSeq12St) {
+                        targetMuLambda = evaluer.predictMuLambda12St(tSeq3Di, *tSeq12St);
                         targetMuLambdaPtr = &targetMuLambda;
                     }
                     if (use12StScoring && structureSmithWaterman.isProfileSearch() && passedNum == 0) {
