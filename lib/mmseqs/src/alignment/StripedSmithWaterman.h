@@ -293,6 +293,9 @@ public:
     const static unsigned int PROFILE_SEQ = 4;
 
 private:
+   // rows of ungapped_alignment_exact, kept across calls
+   std::vector<int> exactPrev;
+   std::vector<int> exactCurr;
    // Shared body of the two ungapped_alignment overloads. TrackDiagonal is a compile-time flag so
    // the non-tracking path generates exactly the code it did before this was added.
    template <bool TrackDiagonal>

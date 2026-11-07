@@ -1834,8 +1834,10 @@ int SmithWaterman::ungappedSaturationScore() const {
 int SmithWaterman::ungapped_alignment_exact(const unsigned char *db_sequence, int32_t db_length,
                                             int &bestDiagonal) {
     const int queryLength = profile->query_length;
-    std::vector<int> prev(queryLength + 1, 0);
-    std::vector<int> curr(queryLength + 1, 0);
+    std::vector<int> &prev = exactPrev;
+    std::vector<int> &curr = exactCurr;
+    prev.assign(queryLength + 1, 0);
+    curr.assign(queryLength + 1, 0);
     int best = 0;
     bestDiagonal = 0;
     for (int j = 0; j < db_length; j++) {
