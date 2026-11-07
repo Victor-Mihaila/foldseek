@@ -37,6 +37,7 @@ private:
     static constexpr double LEGACY_12ST_LAMBDA_STD = 0.03113629892;
     static constexpr double LEGACY_12ST_MU_MEAN = 7.340611654;
     static constexpr double LEGACY_12ST_MU_STD = 7.853373165;
+    static constexpr double LEGACY_12ST_MIN_LAMBDA = 1e-4; // keeps an extreme NN output from flipping the p-value
     BaseMatrix *subMat;
     double logDbResidueCount;
     double logDbSequenceCount;

@@ -171,7 +171,7 @@ std::pair<double, double> EvalueNeuralNet::predictMuLambdaLegacy12St(const Seque
                               subMat12St != NULL ? subMat12St : seq12St.subMat);
     in.data_[LEGACY_12ST_FEATURE_SIZE - 1] = static_cast<float>(seq3Di.L);
     encoder.Apply(&in, &out);
-    return std::make_pair(out.data_[0] * LEGACY_12ST_LAMBDA_STD + LEGACY_12ST_LAMBDA_MEAN,
+    return std::make_pair(std::max(out.data_[0] * LEGACY_12ST_LAMBDA_STD + LEGACY_12ST_LAMBDA_MEAN, static_cast<double>(LEGACY_12ST_MIN_LAMBDA)),
                           out.data_[1] * LEGACY_12ST_MU_STD + LEGACY_12ST_MU_MEAN);
 }
 
