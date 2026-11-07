@@ -15,7 +15,7 @@ fail() {
 if [ -n "${LOWCONF_PAR}" ]; then
     # shellcheck disable=SC2086
     "$MMSEQS" lowconfmembers "${LOWCONF_TARGET_DB}" "${RESULT}" "${OUT}_lcaln" ${LOWCONF_PAR} \
-        || die "lowconfmembers died"
+        || fail "lowconfmembers died"
     RESULT="${OUT}_lcaln"
     REMOVE_LCALN=1
 fi
@@ -86,9 +86,9 @@ fi
 if [ -n "${LOWCONFQ}" ]; then
     lcq() {
         # shellcheck disable=SC2086,SC2153
-        "$MMSEQS" lowconfquery "${INPUT}" "$1" "$1_lcq" ${LOWCONFQ_PAR} || die "lowconfquery died"
-        mv -f -- "$1_lcq" "$1" || die "lowconfquery: could not replace $1"
-        mv -f -- "$1_lcq.index" "$1.index" || die "lowconfquery: could not replace $1.index"
+        "$MMSEQS" lowconfquery "${INPUT}" "$1" "$1_lcq" ${LOWCONFQ_PAR} || fail "lowconfquery died"
+        mv -f -- "$1_lcq" "$1" || fail "lowconfquery: could not replace $1"
+        mv -f -- "$1_lcq.index" "$1.index" || fail "lowconfquery: could not replace $1.index"
         rm -f -- "$1_lcq.dbtype"
     }
     if [ -e "${OUT}_ss.dbtype" ]; then lcq "${OUT}_ss"; fi
