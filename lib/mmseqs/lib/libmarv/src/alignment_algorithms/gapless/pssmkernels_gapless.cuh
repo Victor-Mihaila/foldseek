@@ -873,7 +873,7 @@ namespace hardcodedzero{
                 int maximum = maximumTracker.maximum.x;
                 
                 if(queryPos < queryLength && subjectPos < subjectLength){
-                    if(maximum > myMaximum){
+                    if(endPosIsBetter(maximum, subjectPos, queryPos, myMaximum, mySubjectEndInclusive, myQueryEndInclusive)){
                         myMaximum = maximum;
                         myQueryEndInclusive = queryPos;
                         mySubjectEndInclusive = subjectPos;
@@ -887,7 +887,7 @@ namespace hardcodedzero{
                 subjectPos = maximumTracker.positionOfMaxObserved_row.y;
                 maximum = maximumTracker.maximum.y;
                 if(queryPos < queryLength && subjectPos < subjectLength){
-                    if(maximum > myMaximum){
+                    if(endPosIsBetter(maximum, subjectPos, queryPos, myMaximum, mySubjectEndInclusive, myQueryEndInclusive)){
                         myMaximum = maximum;
                         myQueryEndInclusive = queryPos;
                         mySubjectEndInclusive = subjectPos;
@@ -898,13 +898,7 @@ namespace hardcodedzero{
                 const int3 packed = make_int3(myMaximum, 
                     myQueryEndInclusive,
                     mySubjectEndInclusive);
-                const int3 maxPacked = compatibility::group_reduce(group, packed, [](int3 l, int3 r){
-                    if(l.x > r.x){
-                        return l;
-                    }else{
-                        return r;
-                    }
-                });
+                const int3 maxPacked = compatibility::group_reduce(group, packed, BetterEndPos{});
 
                 const int alignmentScore = maxPacked.x;
                 const int queryEndExclusive = maxPacked.y+1;
@@ -1265,7 +1259,7 @@ namespace hardcodedzero{
                     int subjectPos = maximumTracker.positionOfMaxObserved_row.x;
                     int maximum = maximumTracker.maximum.x;
                     if(queryPos < queryLength && subjectPos < subjectLength){
-                        if(maximum > myMaximum){
+                        if(endPosIsBetter(maximum, subjectPos, queryPos, myMaximum, mySubjectEndInclusive, myQueryEndInclusive)){
                             myMaximum = maximum;
                             myQueryEndInclusive = queryPos;
                             mySubjectEndInclusive = subjectPos;
@@ -1280,7 +1274,7 @@ namespace hardcodedzero{
                     subjectPos = maximumTracker.positionOfMaxObserved_row.y;
                     maximum = maximumTracker.maximum.y;
                     if(queryPos < queryLength && subjectPos < subjectLength){
-                        if(maximum > myMaximum){
+                        if(endPosIsBetter(maximum, subjectPos, queryPos, myMaximum, mySubjectEndInclusive, myQueryEndInclusive)){
                             myMaximum = maximum;
                             myQueryEndInclusive = queryPos;
                             mySubjectEndInclusive = subjectPos;
@@ -1291,13 +1285,7 @@ namespace hardcodedzero{
                     const int3 packed = make_int3(myMaximum, 
                         myQueryEndInclusive,
                         mySubjectEndInclusive);
-                    const int3 maxPacked = compatibility::group_reduce(group, packed, [](int3 l, int3 r){
-                        if(l.x > r.x){
-                            return l;
-                        }else{
-                            return r;
-                        }
-                    });
+                    const int3 maxPacked = compatibility::group_reduce(group, packed, BetterEndPos{});
 
                     const int alignmentScore = maxPacked.x;
                     const int queryEndExclusive = maxPacked.y+1;
