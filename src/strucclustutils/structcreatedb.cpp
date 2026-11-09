@@ -597,7 +597,7 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
         if (par.gpu == 1) {
             std::vector<std::string> gpuDevices = ModernProstModel::getGpuDevices();
             for (size_t i = 0; i < gpuDevices.size(); i++) {
-                if (gpuDevices[i].find("CUDA") != std::string::npos) {
+                if (gpuDevices[i].find("CUDA") != std::string::npos || gpuDevices[i].find("ROCm") != std::string::npos) {
                     devices.push_back(gpuDevices[i]);
                 }
             }
@@ -746,7 +746,7 @@ int structcreatedb(int argc, const char **argv, const Command& command) {
         }
         if (par.gpu == 1 && !devices.empty()) {
             for (std::vector<std::string>::iterator it = devices.begin(); it != devices.end();) {
-                if (it->find("CUDA") == std::string::npos) {
+                if (it->find("CUDA") == std::string::npos && it->find("ROCm") == std::string::npos) {
                     it = devices.erase(it); // Erase returns the next iterator
                 } else {
                     ++it; // Move to the next element

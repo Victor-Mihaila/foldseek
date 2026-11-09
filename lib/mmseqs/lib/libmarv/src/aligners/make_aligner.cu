@@ -5,6 +5,7 @@
 
 #include "make_aligner_headers.cuh"
 #include "../cuda_errorcheck.cuh"
+#include "amd_arch.cuh"
 
 #include "../namespace.hpp"
 LIBMARV_NAMESPACE_BEGIN
@@ -80,6 +81,11 @@ std::unique_ptr<MultiConfigScoreOnlyAlignerInterface> make_multiconfig_gapless_a
 
 #else
 
+#ifdef MARV_HAVE_AMD_GFX90A
+    if(isAmdGfx90a(deviceId)){
+        return make_multiconfig_gapless_aligner_amd_gfx90a_16bit();
+    }
+#endif
 #ifdef MARV_HAVE_AMD_GFX900
     if(ccMajor == 9 && ccMinor == 0){
         return make_multiconfig_gapless_aligner_amd_gfx900_16bit();
@@ -182,6 +188,11 @@ std::unique_ptr<MultiConfigScoreOnlyAlignerInterface> make_multiconfig_gapless_a
 
 #else
 
+#ifdef MARV_HAVE_AMD_GFX90A
+    if(isAmdGfx90a(deviceId)){
+        return make_multiconfig_gapless_aligner_amd_gfx90a_16bit();
+    }
+#endif
 #ifdef MARV_HAVE_AMD_GFX900
     if(ccMajor == 9 && ccMinor == 0){
         return make_multiconfig_gapless_aligner_amd_gfx900_16bit();
@@ -286,6 +297,11 @@ std::unique_ptr<MultiConfigScoreOnlyAlignerInterface> make_multiconfig_gapless_a
 
 
 
+#ifdef MARV_HAVE_AMD_GFX90A
+    if(isAmdGfx90a(deviceId)){
+        return make_multiconfig_gapless_aligner_amd_gfx90a_32bit();
+    }
+#endif
 #ifdef MARV_HAVE_AMD_GFX900
     if(ccMajor == 9 && ccMinor == 0){
         return make_multiconfig_gapless_aligner_amd_gfx900_32bit();
@@ -336,6 +352,11 @@ std::unique_ptr<MultiConfigScoreOnlyAlignerInterface> make_multiconfig_sw_aligne
 #else
 
 
+#ifdef MARV_HAVE_AMD_GFX90A
+    if(isAmdGfx90a(deviceId)){
+        return make_multiconfig_sw_aligner_amd_gfx90a_32bit();
+    }
+#endif
 #ifdef MARV_HAVE_AMD_GFX900
     if(ccMajor == 9 && ccMinor == 0){
         return make_multiconfig_sw_aligner_amd_gfx900_32bit();
