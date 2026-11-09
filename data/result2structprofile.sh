@@ -39,7 +39,7 @@ if [ -n "${CREATE_SS12_PROFILE}" ]; then
         SS12_RAW_OUT="${OUT}_ss12.raw"
     fi
 
-    # shellcheck disable=SC2086
+    # shellcheck disable=SC2086,SC2153
     $RUNNER "$MMSEQS" base:result2profile "${INPUT_SS12_DB}" "${TARGET_SS12_DB}" "${RESULT}" "${SS12_RAW_OUT}" ${PROFILE_SS12_PAR} \
         || fail "result2profile for 12-state died"
 
