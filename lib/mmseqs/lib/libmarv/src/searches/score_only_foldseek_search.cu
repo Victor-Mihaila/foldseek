@@ -137,18 +137,19 @@ LIBMARV_NAMESPACE_WITH_NESTING_BEGIN
                 stream \
             ); \
         }
+        // the tile must hold the longest sequence; 256-thread blocks fit an SM even at the 255-register maximum
         if(sequenceLengthUpperBound <= 16){
             CALLSINGLETHREADSINGLETILE(128, 16)
         }else if(sequenceLengthUpperBound <= 32){
-            CALLSINGLETHREADSINGLETILE(128, 16)
-        }else if(sequenceLengthUpperBound <= 32){
-            CALLSINGLETHREADSINGLETILE(512, 48)
+            CALLSINGLETHREADSINGLETILE(128, 32)
+        }else if(sequenceLengthUpperBound <= 48){
+            CALLSINGLETHREADSINGLETILE(256, 48)
         }else if(sequenceLengthUpperBound <= 64){
-            CALLSINGLETHREADSINGLETILE(512, 64)
+            CALLSINGLETHREADSINGLETILE(256, 64)
         }else if(sequenceLengthUpperBound <= 80){
-            CALLSINGLETHREADSINGLETILE(512, 80)
+            CALLSINGLETHREADSINGLETILE(256, 80)
         }else if(sequenceLengthUpperBound <= 96){
-            CALLSINGLETHREADSINGLETILE(512, 96)
+            CALLSINGLETHREADSINGLETILE(256, 96)
         }else if(sequenceLengthUpperBound <= 112){
             CALLSINGLETHREADSINGLETILE(256, 112)
         }else if(sequenceLengthUpperBound <= 128){

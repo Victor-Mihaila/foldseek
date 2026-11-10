@@ -399,6 +399,10 @@ namespace maskingsinglethread{
             blocksize, 
             smembytes
         ));
+        if(maxBlocksPerSM == 0){
+            throw std::runtime_error("masking kernel does not fit on this GPU (blocksize " + std::to_string(blocksize)
+                + ", " + std::to_string(smembytes) + " bytes shared memory)");
+        }
         
         const int numBlocks = numSMs * maxBlocksPerSM;
         
@@ -751,6 +755,10 @@ namespace maskingsinglethread{
             blocksize, 
             smembytes
         ));
+        if(maxBlocksPerSM == 0){
+            throw std::runtime_error("masking kernel does not fit on this GPU (blocksize " + std::to_string(blocksize)
+                + ", " + std::to_string(smembytes) + " bytes shared memory)");
+        }
         
         const int numBlocks = numSMs * maxBlocksPerSM;
         
@@ -1124,6 +1132,10 @@ namespace maskingsinglethread{
             blocksize, 
             smembytes
         ));
+        if(maxBlocksPerSM == 0){
+            throw std::runtime_error("masking kernel does not fit on this GPU (blocksize " + std::to_string(blocksize)
+                + ", " + std::to_string(smembytes) + " bytes shared memory)");
+        }
         
         const int numBlocks = numSMs * maxBlocksPerSM;
         
@@ -1530,7 +1542,11 @@ namespace maskingsinglethread{
             kernel,
             blocksize, 
             smembytes
-        ));   
+        ));
+        if(maxBlocksPerSM == 0){
+            throw std::runtime_error("masking kernel does not fit on this GPU (blocksize " + std::to_string(blocksize)
+                + ", " + std::to_string(smembytes) + " bytes shared memory)");
+        }   
 
         const int numBlocks = numSMs * maxBlocksPerSM;
         
@@ -1987,6 +2003,10 @@ namespace maskingsinglethread{
             blocksize, 
             smembytes
         ));
+        if(maxBlocksPerSM == 0){
+            throw std::runtime_error("masking kernel does not fit on this GPU (blocksize " + std::to_string(blocksize)
+                + ", " + std::to_string(smembytes) + " bytes shared memory)");
+        }
 
         const int numBlocks = numSMs * maxBlocksPerSM;
         
@@ -2392,6 +2412,10 @@ namespace maskingsinglethread{
             blocksize, 
             smembytes
         ));
+        if(maxBlocksPerSM == 0){
+            throw std::runtime_error("masking kernel does not fit on this GPU (blocksize " + std::to_string(blocksize)
+                + ", " + std::to_string(smembytes) + " bytes shared memory)");
+        }
 
         const int numBlocks = numSMs * maxBlocksPerSM;
         
@@ -2713,6 +2737,10 @@ namespace maskingsinglegroup{
             blocksize, 
             smembytes
         ));
+        if(maxBlocksPerSM == 0){
+            throw std::runtime_error("masking kernel does not fit on this GPU (blocksize " + std::to_string(blocksize)
+                + ", " + std::to_string(smembytes) + " bytes shared memory)");
+        }
         
         const int numBlocks = numSMs * maxBlocksPerSM;
         
@@ -3051,6 +3079,10 @@ namespace maskingsinglegroup{
             blocksize, 
             smembytes
         ));
+        if(maxBlocksPerSM == 0){
+            throw std::runtime_error("masking kernel does not fit on this GPU (blocksize " + std::to_string(blocksize)
+                + ", " + std::to_string(smembytes) + " bytes shared memory)");
+        }
         
         const int numBlocks = numSMs * maxBlocksPerSM;
         
@@ -3378,6 +3410,10 @@ namespace maskingsingleblock{
             blocksize, 
             smembytes
         ));
+        if(maxBlocksPerSM == 0){
+            throw std::runtime_error("masking kernel does not fit on this GPU (blocksize " + std::to_string(blocksize)
+                + ", " + std::to_string(smembytes) + " bytes shared memory)");
+        }
         
         const int numBlocks = numSMs * maxBlocksPerSM;
         
@@ -3699,6 +3735,10 @@ namespace maskingsingleblock{
             blocksize, 
             smembytes
         ));
+        if(maxBlocksPerSM == 0){
+            throw std::runtime_error("masking kernel does not fit on this GPU (blocksize " + std::to_string(blocksize)
+                + ", " + std::to_string(smembytes) + " bytes shared memory)");
+        }
         
         const int numBlocks = numSMs * maxBlocksPerSM;
         
