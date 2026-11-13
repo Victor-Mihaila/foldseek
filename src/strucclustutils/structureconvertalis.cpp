@@ -586,6 +586,26 @@ R"html(<!DOCTYPE html>
     // survive int truncation) and the normalized LoL-score in res.eval
     const bool isLolAlign = (extended & LocalParameters::DBTYPE_EXTENDED_LOLALIGN) != 0;
 
+    if (needBacktrace) {
+        for (size_t i = 0; i < alnDbr.getSize(); i++) {
+            char *data = alnDbr.getData(i, 0);
+            if (*data == '\0') {
+                continue;
+            }
+            Matcher::result_t res;
+            ComplexDataHandler retComplex = parseScoreComplexResult(data, res);
+            if (!retComplex.isValid) {
+                res = Matcher::parseAlignmentRecord(data, true);
+            }
+            if (res.backtrace.empty()) {
+                Debug(Debug::ERROR) << "Backtrace cigar is missing in the alignment result. Please recompute the alignment with the -a flag.\n"
+                                       "Command: mmseqs align " << par.db1 << " " << par.db2 << " " << par.db3 << " " << "alnNew -a\n";
+                EXIT(EXIT_FAILURE);
+            }
+            break;
+        }
+    }
+
     Debug::Progress progress(alnDbr.getSize());
 #pragma omp parallel num_threads(localThreads)
     {

@@ -13,7 +13,7 @@
 #include "IndexTypes.h"
 
 #ifndef EXIT
-#define EXIT(exitCode) do { int __status = (exitCode); fflush(NULL); exit(__status); } while(0)
+#define EXIT(exitCode) do { int __status = (exitCode); fflush(NULL); if (MMSEQS_IN_PARALLEL()) { _Exit(__status); } exit(__status); } while(0)
 #endif
 
 #define BIT_SET(a,b) ((a) | (1ULL<<(b)))
