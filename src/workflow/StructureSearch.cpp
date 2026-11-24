@@ -144,9 +144,12 @@ int structuresearch(int argc, const char **argv, const Command &command) {
         cmd.addVariable("ALIGNMENT_PAR", par.createParameterString(par.lolalign).c_str());
         par.alignmentMode = Parameters::ALIGNMENT_MODE_SCORE_ONLY;
         par.sortByStructureBits = 0;
-        par.useAuxScoring = 0;
         //par.evalThr = 10; we want users to adjust this one. Our default is 10 anyhow.
+        // the candidates for LoLalign come from the regular 3Di+AA(+12-state) alignment
+        const int lolAlignmentType = par.alignmentType;
+        par.alignmentType = LocalParameters::ALIGNMENT_TYPE_3DI_AA;
         cmd.addVariable("STRUCTUREALIGN_PAR", par.createParameterString(par.structurealign).c_str());
+        par.alignmentType = lolAlignmentType;
     }else if(par.alignmentType == LocalParameters::ALIGNMENT_TYPE_3DI_AA || par.alignmentType == LocalParameters::ALIGNMENT_TYPE_3DI){
         cmd.addVariable("ALIGNMENT_ALGO", "structurealign");
         cmd.addVariable("QUERY_ALIGNMENT", query.c_str());
