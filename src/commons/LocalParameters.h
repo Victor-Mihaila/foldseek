@@ -182,6 +182,13 @@ public:
     PARAMETER(PARAM_SORT_BY_STRUCTURE_BITS)
     PARAMETER(PARAM_STANDIN_RESCORE)
     PARAMETER(PARAM_STANDIN_SCORE)
+    PARAMETER(PARAM_STANDIN_MAX_EVALUE)
+    PARAMETER(PARAM_STANDIN_NEW_REGION)
+    PARAMETER(PARAM_STANDIN_MIN_SHARED)
+    PARAMETER(PARAM_STANDIN_FALLBACK)
+    PARAMETER(PARAM_STANDIN_NORM)
+    PARAMETER(PARAM_STANDIN_PER_REGION)
+    PARAMETER(PARAM_STANDIN_EXPONENT)
     PARAMETER(PARAM_MASK_BFACTOR_THRESHOLD)
     PARAMETER(PARAM_PROFILE_LOWCONF_MEMBERS)
     PARAMETER(PARAM_LOWCONF_MEMBER_MAX)
@@ -238,6 +245,13 @@ public:
     int sortByStructureBits;
     int standinRescore;
     int standinScore;
+    double standinMaxEvalue;
+    float standinNewRegion;
+    int standinMinShared;
+    int standinFallback;
+    int standinNorm;
+    int standinPerRegion;
+    float standinExponent;
     float maskBfactorThreshold;
     int profileLowconfMembers;
     float lowconfMemberMax;

@@ -17,6 +17,8 @@
 #ifdef OPENMP
 #include <omp.h>
 #endif
+#include <cmath>
+#include <cstdint>
 #include <memory>
 
 // need for sorting the     results
@@ -31,15 +33,24 @@ static bool compareHitsByStructureBits(const Matcher::result_t &first, const Mat
 }
 
 
-// --standin-rescore: multiplies each hit's score by the TM-score (or lDDT, --standin-score) of its target to a stand-in
-// structure, the best hit (E-value < 1) of the query region sharing most residues with the hit, normalised by the hit's
-// aligned query length. Hits sharing fewer than 10 residues with every stand-in get the median score. Returns false if
-// there is no stand-in.
+struct StandinSettings {
+    int score;          // 0 TM-score, 1 lDDT, 2 sqrt(TM-score*lDDT)
+    double maxEvalue;
+    float newRegion;
+    size_t minShared;
+    int fallback;       // 0 median, 1 unchanged, 2 nearest stand-in
+    int norm;           // 0 hit's aligned query residues, 1 shared residues
+    size_t perRegion;
+    float exponent;
+};
+
+// --standin-rescore: multiplies each hit's score by its TM-score (or lDDT) to stand-in structures: the best hits
+// (E-value < --standin-max-evalue) of the query region sharing most residues with the hit, one region per stretch of
+// the query not yet covered (--standin-new-region), up to --standin-per-region stand-ins each (mean score).
+// Returns false if there is no stand-in.
 static bool rescoreByStandin(std::vector<Matcher::result_t> &hits, unsigned int queryKey, bool skipIdentity,
                              IndexReader *tcadbr, unsigned int thread_idx, TMaligner &tmaligner, LDDTCalculator *lddtcalculator,
-                             int standinScore, Coordinate16 &tcoords) {
-    const double maxStandinEvalue = 1.0;
-    const size_t minShared = 10;
+                             const StandinSettings &set, Coordinate16 &tcoords) {
     const size_t n = hits.size();
     if (n == 0) {
         return false;
@@ -65,10 +76,13 @@ static bool rescoreByStandin(std::vector<Matcher::result_t> &hits, unsigned int 
     std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return Matcher::compareHits(hits[a], hits[b]); });
 
     std::vector<size_t> standin;
+    std::vector<size_t> standinRegion;
     std::vector<std::vector<int>> standinMap;
+    std::vector<std::vector<char>> regionCov;
+    std::vector<size_t> regionSize;
     std::vector<char> covered(qLen, 0);
     for (size_t i : order) {
-        if (hits[i].eval >= maxStandinEvalue) {
+        if (hits[i].eval >= set.maxEvalue) {
             break;
         }
         if ((skipIdentity && hits[i].dbKey == queryKey) || qPos[i].empty()) {
@@ -78,57 +92,92 @@ static bool rescoreByStandin(std::vector<Matcher::result_t> &hits, unsigned int 
         for (int q : qPos[i]) {
             cov += covered[q];
         }
-        if (2 * cov >= qPos[i].size()) {
-            continue;
+        size_t region;
+        if (cov < set.newRegion * qPos[i].size()) {
+            region = regionCov.size();
+            regionCov.emplace_back(qLen, 0);
+            regionSize.push_back(0);
+        } else {
+            if (set.perRegion < 2) {
+                continue;
+            }
+            size_t bestOverlap = 0;
+            region = SIZE_MAX;
+            for (size_t r = 0; r < regionCov.size(); r++) {
+                size_t overlap = 0;
+                for (int q : qPos[i]) {
+                    overlap += regionCov[r][q];
+                }
+                if (overlap > bestOverlap) {
+                    bestOverlap = overlap; region = r;
+                }
+            }
+            if (region == SIZE_MAX || regionSize[region] >= set.perRegion) {
+                continue;
+            }
         }
         std::vector<int> map(qLen, -1);
         for (size_t k = 0; k < qPos[i].size(); k++) {
             map[qPos[i][k]] = tPos[i][k];
             covered[qPos[i][k]] = 1;
+            regionCov[region][qPos[i][k]] = 1;
         }
         standin.push_back(i);
+        standinRegion.push_back(region);
         standinMap.push_back(std::move(map));
+        regionSize[region]++;
     }
     if (standin.empty()) {
         return false;
     }
 
-    std::vector<int> best(n, -1);
-    std::vector<size_t> shared(n, 0);
+    const size_t S = standin.size();
+    std::vector<size_t> shared(n * S, 0);
+    std::vector<size_t> region(n, SIZE_MAX);
+    std::vector<size_t> nearest(n, SIZE_MAX);
     for (size_t i = 0; i < n; i++) {
-        for (size_t s = 0; s < standin.size(); s++) {
+        size_t most = 0;
+        for (size_t s = 0; s < S; s++) {
             size_t cnt = 0;
             for (int q : qPos[i]) {
                 cnt += (standinMap[s][q] >= 0);
             }
-            if (cnt > shared[i]) {
-                shared[i] = cnt; best[i] = s;
+            shared[i * S + s] = cnt;
+            if (cnt > most) {
+                most = cnt; region[i] = standinRegion[s]; nearest[i] = s;
             }
         }
     }
 
-    std::vector<double> tm(n, -1.0);
+    std::vector<double> sum(n, 0.0);
+    std::vector<int> cnt(n, 0);
     std::vector<float> sx, sy, sz;
     std::string bt;
-    for (size_t s = 0; s < standin.size(); s++) {
+    for (size_t s = 0; s < S; s++) {
+        bool initialised = false;
         const Matcher::result_t &sr = hits[standin[s]];
-        size_t sId = tcadbr->sequenceReader->getId(sr.dbKey);
-        float *sCa = tcoords.read(tcadbr->sequenceReader->getData(sId, thread_idx), sr.dbLen, tcadbr->sequenceReader->getEntryLen(sId));
-        sx.assign(sCa, sCa + sr.dbLen); sy.assign(sCa + sr.dbLen, sCa + 2 * sr.dbLen); sz.assign(sCa + 2 * sr.dbLen, sCa + 3 * sr.dbLen);
-        tmaligner.initQuery(sx.data(), sy.data(), sz.data(), NULL, sr.dbLen);
-        if (standinScore != 0) {
-            lddtcalculator->initQuery(sr.dbLen, sx.data(), sy.data(), sz.data());
-        }
         for (size_t i = 0; i < n; i++) {
-            if (best[i] != (int) s) {
+            if (region[i] != standinRegion[s]) {
                 continue;
             }
             if (i == standin[s]) {
-                tm[i] = 1.0;
+                sum[i] += 1.0; cnt[i]++;
                 continue;
             }
-            if (shared[i] < minShared) {
+            const size_t sh = shared[i * S + s];
+            const bool useNearest = (set.fallback == 2 && nearest[i] == s && sh >= 3);
+            if (sh < set.minShared && useNearest == false) {
                 continue;
+            }
+            if (initialised == false) {
+                size_t sId = tcadbr->sequenceReader->getId(sr.dbKey);
+                float *sCa = tcoords.read(tcadbr->sequenceReader->getData(sId, thread_idx), sr.dbLen, tcadbr->sequenceReader->getEntryLen(sId));
+                sx.assign(sCa, sCa + sr.dbLen); sy.assign(sCa + sr.dbLen, sCa + 2 * sr.dbLen); sz.assign(sCa + 2 * sr.dbLen, sCa + 3 * sr.dbLen);
+                tmaligner.initQuery(sx.data(), sy.data(), sz.data(), NULL, sr.dbLen);
+                if (set.score != 0) {
+                    lddtcalculator->initQuery(sr.dbLen, sx.data(), sy.data(), sz.data());
+                }
+                initialised = true;
             }
             bt.clear();
             int firstS = -1, firstH = -1, prevS = -1, prevH = -1;
@@ -150,23 +199,26 @@ static bool rescoreByStandin(std::vector<Matcher::result_t> &hits, unsigned int 
             const Matcher::result_t &hr = hits[i];
             size_t hId = tcadbr->sequenceReader->getId(hr.dbKey);
             float *hCa = tcoords.read(tcadbr->sequenceReader->getData(hId, thread_idx), hr.dbLen, tcadbr->sequenceReader->getEntryLen(hId));
+            const int normLen = (set.norm == 0) ? (int) qPos[i].size() : (int) sh;
             double tmv = 0.0, lddtv = 0.0;
-            if (standinScore != 1) {
-                tmv = tmaligner.computeTMscore(hCa, hCa + hr.dbLen, hCa + 2 * hr.dbLen, hr.dbLen, firstS, firstH, bt,
-                                               (int) qPos[i].size()).tmscore;
+            if (set.score != 1) {
+                tmv = tmaligner.computeTMscore(hCa, hCa + hr.dbLen, hCa + 2 * hr.dbLen, hr.dbLen, firstS, firstH, bt, normLen).tmscore;
             }
-            if (standinScore != 0) {
+            if (set.score != 0) {
                 lddtv = lddtcalculator->computeLDDTScore(hr.dbLen, firstS, firstH, bt, hCa, hCa + hr.dbLen, hCa + 2 * hr.dbLen).avgLddtScore
-                        * shared[i] / qPos[i].size();
+                        * sh / normLen;
             }
-            tm[i] = (standinScore == 0) ? tmv : (standinScore == 1) ? lddtv : sqrt(tmv * lddtv);
+            sum[i] += (set.score == 0) ? tmv : (set.score == 1) ? lddtv : sqrt(tmv * lddtv);
+            cnt[i]++;
         }
     }
 
+    std::vector<double> value(n, -1.0);
     std::vector<double> computed;
-    for (double v : tm) {
-        if (v >= 0) {
-            computed.push_back(v);
+    for (size_t i = 0; i < n; i++) {
+        if (cnt[i] > 0) {
+            value[i] = sum[i] / cnt[i];
+            computed.push_back(value[i]);
         }
     }
     double median = 0.0;
@@ -175,7 +227,11 @@ static bool rescoreByStandin(std::vector<Matcher::result_t> &hits, unsigned int 
         median = computed[computed.size() / 2];
     }
     for (size_t i = 0; i < n; i++) {
-        hits[i].score = hits[i].score * ((tm[i] >= 0) ? tm[i] : median);
+        double v = value[i];
+        if (v < 0) {
+            v = (set.fallback == 1) ? 1.0 : median;
+        }
+        hits[i].score = hits[i].score * ((set.exponent == 1.0f) ? v : pow(v, set.exponent));
     }
     return true;
 }
@@ -519,6 +575,9 @@ int structurealign(int argc, const char **argv, const Command& command) {
                                 par.evalue12StProfileComp != 0,
                                 subMat12St);
         std::vector<Matcher::result_t> alignmentResult;
+        const StandinSettings standinSettings = {par.standinScore, par.standinMaxEvalue, par.standinNewRegion,
+                                                 (size_t) par.standinMinShared, par.standinFallback, par.standinNorm,
+                                                 (size_t) par.standinPerRegion, par.standinExponent};
         StructureSmithWaterman structureSmithWaterman(par.maxSeqLen, subMat3Di.alphabetSize, par.compBiasCorrection, par.compBiasCorrectionScale, &subMatAA, &subMat3Di);
         StructureSmithWaterman reverseStructureSmithWaterman(par.maxSeqLen, subMat3Di.alphabetSize, par.compBiasCorrection, par.compBiasCorrectionScale, &subMatAA, &subMat3Di);
         TMaligner *tmaligner = NULL;
@@ -786,7 +845,7 @@ int structurealign(int argc, const char **argv, const Command& command) {
             bool rescored = false;
             if (useStandin) {
                 rescored = rescoreByStandin(alignmentResult, queryKey, sameDB || par.includeIdentity, tcadbr, thread_idx, *tmaligner,
-                                            lddtcalculator, par.standinScore, tcoords);
+                                            lddtcalculator, standinSettings, tcoords);
             }
             if (alignmentResult.size() > 1) {
                 if(par.sortByStructureBits || rescored) {

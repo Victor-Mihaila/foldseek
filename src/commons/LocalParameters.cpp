@@ -16,6 +16,13 @@ LocalParameters::LocalParameters() :
         PARAM_SORT_BY_STRUCTURE_BITS(PARAM_SORT_BY_STRUCTURE_BITS_ID,"--sort-by-structure-bits", "Sort by structure bit score", "sort by bits*sqrt(alnlddt*alntmscore)",typeid(int), (void *) &sortByStructureBits, "^[0-1]{1}$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
         PARAM_STANDIN_RESCORE(PARAM_STANDIN_RESCORE_ID, "--standin-rescore", "Rescore with a stand-in structure", "Rank hits by bits*TM-score to a stand-in structure, the best hit (E-value < 1) of each query region\n0: off\n1: for queries without C-alpha coordinates\n2: always (instead of --sort-by-structure-bits)", typeid(int), (void *) &standinRescore, "^[0-2]{1}$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
         PARAM_STANDIN_SCORE(PARAM_STANDIN_SCORE_ID, "--standin-score", "Stand-in score", "Score of a hit against its stand-in for --standin-rescore\n0: TM-score\n1: lDDT\n2: sqrt(TM-score*lDDT)", typeid(int), (void *) &standinScore, "^[0-2]{1}$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_STANDIN_MAX_EVALUE(PARAM_STANDIN_MAX_EVALUE_ID, "--standin-max-evalue", "Stand-in E-value", "--standin-rescore: maximum E-value of a hit to become a stand-in", typeid(double), (void *) &standinMaxEvalue, "^([-+]?[0-9]*\\.?[0-9]+([eE][-+]?[0-9]+)?)|[0-9]*(\\.[0-9]+)?$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_STANDIN_NEW_REGION(PARAM_STANDIN_NEW_REGION_ID, "--standin-new-region", "Stand-in new region", "--standin-rescore: a hit starts a new query region if less than this fraction of its aligned query residues is covered by earlier stand-ins [0.0,1.0]", typeid(float), (void *) &standinNewRegion, "^0(\\.[0-9]+)?|1(\\.0+)?$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_STANDIN_MIN_SHARED(PARAM_STANDIN_MIN_SHARED_ID, "--standin-min-shared", "Stand-in min shared residues", "--standin-rescore: hits sharing fewer query residues with the stand-ins of their region get the fallback", typeid(int), (void *) &standinMinShared, "^[0-9]+$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_STANDIN_FALLBACK(PARAM_STANDIN_FALLBACK_ID, "--standin-fallback", "Stand-in fallback", "--standin-rescore: score of hits without enough shared residues\n0: median of the query's hits\n1: unchanged (factor 1)\n2: nearest stand-in anyway", typeid(int), (void *) &standinFallback, "^[0-2]{1}$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_STANDIN_NORM(PARAM_STANDIN_NORM_ID, "--standin-norm", "Stand-in normalisation", "--standin-rescore: normalise the stand-in score by\n0: the hit's aligned query residues\n1: the shared residues only", typeid(int), (void *) &standinNorm, "^[0-1]{1}$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_STANDIN_PER_REGION(PARAM_STANDIN_PER_REGION_ID, "--standin-per-region", "Stand-ins per region", "--standin-rescore: number of stand-ins per query region; a hit's score is the mean over them", typeid(int), (void *) &standinPerRegion, "^[1-9][0-9]*$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_STANDIN_EXPONENT(PARAM_STANDIN_EXPONENT_ID, "--standin-exponent", "Stand-in exponent", "--standin-rescore: hits are multiplied by the stand-in score to this power", typeid(float), (void *) &standinExponent, "^[0-9]*(\\.[0-9]+)?$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
         PARAM_MASK_BFACTOR_THRESHOLD(PARAM_MASK_BFACTOR_THRESHOLD_ID,"--mask-bfactor-threshold", "Mask b-factor threshold", "mask residues for seeding if b-factor < thr [0,100]",typeid(float), (void *) &maskBfactorThreshold, "^[0-9]*(\\.[0-9]+)?$"),
         PARAM_PROFILE_LOWCONF_MEMBERS(PARAM_PROFILE_LOWCONF_MEMBERS_ID,"--profile-lowconf-members", "Gap low-confidence member residues", "result2profile: member residues that are lowercase in the TARGET amino-acid db (pLDDT below --mask-bfactor-threshold at createdb) do not contribute to the profile\n0: off\n1: on", typeid(int), (void *) &profileLowconfMembers, "^[0-1]{1}$", MMseqsParameter::COMMAND_PROFILE),
         PARAM_LOWCONF_MEMBER_MAX(PARAM_LOWCONF_MEMBER_MAX_ID,"--lowconf-member-max", "Max low-confidence fraction of a member", "with --profile-lowconf-members 1: drop a member whose aligned residues are more than this fraction low-confidence [0.0,1.0]", typeid(float), (void *) &lowconfMemberMax, "^0(\\.[0-9]+)?|1(\\.0+)?$", MMseqsParameter::COMMAND_PROFILE | MMseqsParameter::COMMAND_EXPERT),
@@ -193,6 +200,13 @@ LocalParameters::LocalParameters() :
     structurealign.push_back(&PARAM_SORT_BY_STRUCTURE_BITS);
     structurealign.push_back(&PARAM_STANDIN_RESCORE);
     structurealign.push_back(&PARAM_STANDIN_SCORE);
+    structurealign.push_back(&PARAM_STANDIN_MAX_EVALUE);
+    structurealign.push_back(&PARAM_STANDIN_NEW_REGION);
+    structurealign.push_back(&PARAM_STANDIN_MIN_SHARED);
+    structurealign.push_back(&PARAM_STANDIN_FALLBACK);
+    structurealign.push_back(&PARAM_STANDIN_NORM);
+    structurealign.push_back(&PARAM_STANDIN_PER_REGION);
+    structurealign.push_back(&PARAM_STANDIN_EXPONENT);
     structurealign.push_back(&PARAM_ALIGNMENT_TYPE);
     structurealign.push_back(&PARAM_EXACT_TMSCORE);
     structurealign.push_back(&PARAM_SUBMAT_12ST_SCALE);
@@ -472,6 +486,13 @@ LocalParameters::LocalParameters() :
     sortByStructureBits = 1;
     standinRescore = 0;
     standinScore = 0;
+    standinMaxEvalue = 1.0;
+    standinNewRegion = 0.5f;
+    standinMinShared = 10;
+    standinFallback = 0;
+    standinNorm = 0;
+    standinPerRegion = 1;
+    standinExponent = 1.0f;
     evalueNNMode = EVALUE_NN_MODE_AUTO;
     evalue12StProfileComp = 0;
     clusterSearch = 0;
