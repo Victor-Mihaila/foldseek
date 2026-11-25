@@ -180,6 +180,7 @@ public:
     PARAMETER(PARAM_TMALIGN_HIT_ORDER)
     PARAMETER(PARAM_LDDT_THRESHOLD)
     PARAMETER(PARAM_SORT_BY_STRUCTURE_BITS)
+    PARAMETER(PARAM_STANDIN_RESCORE)
     PARAMETER(PARAM_MASK_BFACTOR_THRESHOLD)
     PARAMETER(PARAM_PROFILE_LOWCONF_MEMBERS)
     PARAMETER(PARAM_LOWCONF_MEMBER_MAX)
@@ -234,6 +235,7 @@ public:
     int tmAlignHitOrder;
     float lddtThr;
     int sortByStructureBits;
+    int standinRescore;
     float maskBfactorThreshold;
     int profileLowconfMembers;
     float lowconfMemberMax;

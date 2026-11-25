@@ -31,6 +31,142 @@ static bool compareHitsByStructureBits(const Matcher::result_t &first, const Mat
 }
 
 
+// --standin-rescore: multiplies each hit's score by the TM-score of its target to a stand-in structure, the best hit
+// (E-value < 1) of the query region sharing most residues with the hit, normalised by the hit's aligned query length.
+// Hits sharing fewer than 10 residues with every stand-in get the median TM-score. Returns false if there is no stand-in.
+static bool rescoreByStandin(std::vector<Matcher::result_t> &hits, unsigned int queryKey, bool skipIdentity,
+                             IndexReader *tcadbr, unsigned int thread_idx, TMaligner &tmaligner, Coordinate16 &tcoords) {
+    const double maxStandinEvalue = 1.0;
+    const size_t minShared = 10;
+    const size_t n = hits.size();
+    if (n == 0) {
+        return false;
+    }
+    const int qLen = hits[0].qLen;
+    std::vector<std::vector<int>> qPos(n), tPos(n);
+    for (size_t i = 0; i < n; i++) {
+        int q = hits[i].qStartPos, t = hits[i].dbStartPos;
+        for (char op : hits[i].backtrace) {
+            if (op == 'M') {
+                qPos[i].push_back(q++); tPos[i].push_back(t++);
+            } else if (op == 'I') {
+                q++;
+            } else {
+                t++;
+            }
+        }
+    }
+    std::vector<size_t> order(n);
+    for (size_t i = 0; i < n; i++) {
+        order[i] = i;
+    }
+    std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return Matcher::compareHits(hits[a], hits[b]); });
+
+    std::vector<size_t> standin;
+    std::vector<std::vector<int>> standinMap;
+    std::vector<char> covered(qLen, 0);
+    for (size_t i : order) {
+        if (hits[i].eval >= maxStandinEvalue) {
+            break;
+        }
+        if ((skipIdentity && hits[i].dbKey == queryKey) || qPos[i].empty()) {
+            continue;
+        }
+        size_t cov = 0;
+        for (int q : qPos[i]) {
+            cov += covered[q];
+        }
+        if (2 * cov >= qPos[i].size()) {
+            continue;
+        }
+        std::vector<int> map(qLen, -1);
+        for (size_t k = 0; k < qPos[i].size(); k++) {
+            map[qPos[i][k]] = tPos[i][k];
+            covered[qPos[i][k]] = 1;
+        }
+        standin.push_back(i);
+        standinMap.push_back(std::move(map));
+    }
+    if (standin.empty()) {
+        return false;
+    }
+
+    std::vector<int> best(n, -1);
+    std::vector<size_t> shared(n, 0);
+    for (size_t i = 0; i < n; i++) {
+        for (size_t s = 0; s < standin.size(); s++) {
+            size_t cnt = 0;
+            for (int q : qPos[i]) {
+                cnt += (standinMap[s][q] >= 0);
+            }
+            if (cnt > shared[i]) {
+                shared[i] = cnt; best[i] = s;
+            }
+        }
+    }
+
+    std::vector<double> tm(n, -1.0);
+    std::vector<float> sx, sy, sz;
+    std::string bt;
+    for (size_t s = 0; s < standin.size(); s++) {
+        const Matcher::result_t &sr = hits[standin[s]];
+        size_t sId = tcadbr->sequenceReader->getId(sr.dbKey);
+        float *sCa = tcoords.read(tcadbr->sequenceReader->getData(sId, thread_idx), sr.dbLen, tcadbr->sequenceReader->getEntryLen(sId));
+        sx.assign(sCa, sCa + sr.dbLen); sy.assign(sCa + sr.dbLen, sCa + 2 * sr.dbLen); sz.assign(sCa + 2 * sr.dbLen, sCa + 3 * sr.dbLen);
+        tmaligner.initQuery(sx.data(), sy.data(), sz.data(), NULL, sr.dbLen);
+        for (size_t i = 0; i < n; i++) {
+            if (best[i] != (int) s) {
+                continue;
+            }
+            if (i == standin[s]) {
+                tm[i] = 1.0;
+                continue;
+            }
+            if (shared[i] < minShared) {
+                continue;
+            }
+            bt.clear();
+            int firstS = -1, firstH = -1, prevS = -1, prevH = -1;
+            for (size_t k = 0; k < qPos[i].size(); k++) {
+                int sp = standinMap[s][qPos[i][k]];
+                if (sp < 0) {
+                    continue;
+                }
+                int hp = tPos[i][k];
+                if (firstS < 0) {
+                    firstS = sp; firstH = hp;
+                } else {
+                    bt.append(sp - prevS - 1, 'I');
+                    bt.append(hp - prevH - 1, 'D');
+                }
+                bt.push_back('M');
+                prevS = sp; prevH = hp;
+            }
+            const Matcher::result_t &hr = hits[i];
+            size_t hId = tcadbr->sequenceReader->getId(hr.dbKey);
+            float *hCa = tcoords.read(tcadbr->sequenceReader->getData(hId, thread_idx), hr.dbLen, tcadbr->sequenceReader->getEntryLen(hId));
+            tm[i] = tmaligner.computeTMscore(hCa, hCa + hr.dbLen, hCa + 2 * hr.dbLen, hr.dbLen, firstS, firstH, bt,
+                                             (int) qPos[i].size()).tmscore;
+        }
+    }
+
+    std::vector<double> computed;
+    for (double v : tm) {
+        if (v >= 0) {
+            computed.push_back(v);
+        }
+    }
+    double median = 0.0;
+    if (computed.empty() == false) {
+        std::nth_element(computed.begin(), computed.begin() + computed.size() / 2, computed.end());
+        median = computed[computed.size() / 2];
+    }
+    for (size_t i = 0; i < n; i++) {
+        hits[i].score = hits[i].score * ((tm[i] >= 0) ? tm[i] : median);
+    }
+    return true;
+}
+
 static void structureAlignDefault(LocalParameters & par) {
     par.compBiasCorrectionScale = 0.5;
     par.alignmentType = LocalParameters::ALIGNMENT_TYPE_3DI_AA;
@@ -232,6 +368,16 @@ int structurealign(int argc, const char **argv, const Command& command) {
         }
     }
 
+    bool useStandin = false;
+    if (par.standinRescore == 2 || (par.standinRescore == 1 && db1CaExist == false)) {
+        if (db2CaExist == false || par.alignmentMode == 1 || par.alignmentMode == 2) {
+            Debug(Debug::WARNING) << "--standin-rescore needs the target C-alpha database and --alignment-mode 0 or 3; disabled\n";
+        } else {
+            useStandin = true;
+            par.sortByStructureBits = false;
+        }
+    }
+
     DBReader<unsigned int> resultReader(par.db3.c_str(), par.db3Index.c_str(), par.threads, DBReader<unsigned int>::USE_DATA|DBReader<unsigned int>::USE_INDEX);
     resultReader.open(DBReader<unsigned int>::LINEAR_ACCCESS);
 
@@ -283,6 +429,15 @@ int structurealign(int argc, const char **argv, const Command& command) {
                     alignmentIsExtended ? "_seq_ca" : "_ca"
             );
         }
+    }
+
+    if (useStandin && tcadbr == NULL) {
+        tcadbr = new IndexReader(par.db2, par.threads,
+                                 alignmentIsExtended ? IndexReader::makeUserDatabaseType(LocalParameters::INDEX_DB_CA_KEY_DB2) :
+                                                       IndexReader::makeUserDatabaseType(LocalParameters::INDEX_DB_CA_KEY_DB1),
+                                 touch ? (IndexReader::PRELOAD_INDEX | IndexReader::PRELOAD_DATA) : 0,
+                                 DBReader<unsigned int>::USE_INDEX | DBReader<unsigned int>::USE_DATA,
+                                 alignmentIsExtended ? "_seq_ca" : "_ca");
     }
 
     SubstitutionMatrix subMat3Di(par.scoringMatrixFile.values.aminoacid().c_str(), 2.1, par.scoreBias);
@@ -354,7 +509,7 @@ int structurealign(int argc, const char **argv, const Command& command) {
         StructureSmithWaterman structureSmithWaterman(par.maxSeqLen, subMat3Di.alphabetSize, par.compBiasCorrection, par.compBiasCorrectionScale, &subMatAA, &subMat3Di);
         StructureSmithWaterman reverseStructureSmithWaterman(par.maxSeqLen, subMat3Di.alphabetSize, par.compBiasCorrection, par.compBiasCorrectionScale, &subMatAA, &subMat3Di);
         TMaligner *tmaligner = NULL;
-        if(needTMaligner) {
+        if(needTMaligner || useStandin) {
             tmaligner = new TMaligner(
                     std::max(q3DiDbr->sequenceReader->getMaxSeqLen() + 1, t3DiDbr.sequenceReader->getMaxSeqLen() + 1), false, true, par.exactTMscore);
         }
@@ -614,8 +769,12 @@ int structurealign(int argc, const char **argv, const Command& command) {
             }
 
 
+            bool rescored = false;
+            if (useStandin) {
+                rescored = rescoreByStandin(alignmentResult, queryKey, sameDB || par.includeIdentity, tcadbr, thread_idx, *tmaligner, tcoords);
+            }
             if (alignmentResult.size() > 1) {
-                if(par.sortByStructureBits) {
+                if(par.sortByStructureBits || rescored) {
                     SORT_SERIAL(alignmentResult.begin(), alignmentResult.end(), compareHitsByStructureBits);
                 } else {
                     SORT_SERIAL(alignmentResult.begin(), alignmentResult.end(), Matcher::compareHits);
@@ -629,7 +788,7 @@ int structurealign(int argc, const char **argv, const Command& command) {
             resultBuffer.clear();
             alignmentResult.clear();
         }
-        if(needTMaligner){
+        if(needTMaligner || useStandin){
             delete tmaligner;
         }
         if(needLDDT){
@@ -645,10 +804,10 @@ int structurealign(int argc, const char **argv, const Command& command) {
     dbw.close();
     resultReader.close();
 
-    if(needCalpha){
-        if (sameDB == false) {
-            delete tcadbr;
-        }
+    if (tcadbr != NULL && tcadbr != qcadbr) {
+        delete tcadbr;
+    }
+    if (qcadbr != NULL) {
         delete qcadbr;
     }
 
