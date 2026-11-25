@@ -181,6 +181,7 @@ public:
     PARAMETER(PARAM_LDDT_THRESHOLD)
     PARAMETER(PARAM_SORT_BY_STRUCTURE_BITS)
     PARAMETER(PARAM_STANDIN_RESCORE)
+    PARAMETER(PARAM_STANDIN_SCORE)
     PARAMETER(PARAM_MASK_BFACTOR_THRESHOLD)
     PARAMETER(PARAM_PROFILE_LOWCONF_MEMBERS)
     PARAMETER(PARAM_LOWCONF_MEMBER_MAX)
@@ -236,6 +237,7 @@ public:
     float lddtThr;
     int sortByStructureBits;
     int standinRescore;
+    int standinScore;
     float maskBfactorThreshold;
     int profileLowconfMembers;
     float lowconfMemberMax;

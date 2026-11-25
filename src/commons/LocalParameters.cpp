@@ -15,6 +15,7 @@ LocalParameters::LocalParameters() :
         PARAM_LDDT_THRESHOLD(PARAM_LDDT_THRESHOLD_ID,"--lddt-threshold", "LDDT threshold", "accept alignments with a lddt > thr [0.0,1.0]",typeid(float), (void *) &lddtThr, "^0(\\.[0-9]+)?|1(\\.0+)?$"),
         PARAM_SORT_BY_STRUCTURE_BITS(PARAM_SORT_BY_STRUCTURE_BITS_ID,"--sort-by-structure-bits", "Sort by structure bit score", "sort by bits*sqrt(alnlddt*alntmscore)",typeid(int), (void *) &sortByStructureBits, "^[0-1]{1}$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
         PARAM_STANDIN_RESCORE(PARAM_STANDIN_RESCORE_ID, "--standin-rescore", "Rescore with a stand-in structure", "Rank hits by bits*TM-score to a stand-in structure, the best hit (E-value < 1) of each query region\n0: off\n1: for queries without C-alpha coordinates\n2: always (instead of --sort-by-structure-bits)", typeid(int), (void *) &standinRescore, "^[0-2]{1}$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_STANDIN_SCORE(PARAM_STANDIN_SCORE_ID, "--standin-score", "Stand-in score", "Score of a hit against its stand-in for --standin-rescore\n0: TM-score\n1: lDDT\n2: sqrt(TM-score*lDDT)", typeid(int), (void *) &standinScore, "^[0-2]{1}$", MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
         PARAM_MASK_BFACTOR_THRESHOLD(PARAM_MASK_BFACTOR_THRESHOLD_ID,"--mask-bfactor-threshold", "Mask b-factor threshold", "mask residues for seeding if b-factor < thr [0,100]",typeid(float), (void *) &maskBfactorThreshold, "^[0-9]*(\\.[0-9]+)?$"),
         PARAM_PROFILE_LOWCONF_MEMBERS(PARAM_PROFILE_LOWCONF_MEMBERS_ID,"--profile-lowconf-members", "Gap low-confidence member residues", "result2profile: member residues that are lowercase in the TARGET amino-acid db (pLDDT below --mask-bfactor-threshold at createdb) do not contribute to the profile\n0: off\n1: on", typeid(int), (void *) &profileLowconfMembers, "^[0-1]{1}$", MMseqsParameter::COMMAND_PROFILE),
         PARAM_LOWCONF_MEMBER_MAX(PARAM_LOWCONF_MEMBER_MAX_ID,"--lowconf-member-max", "Max low-confidence fraction of a member", "with --profile-lowconf-members 1: drop a member whose aligned residues are more than this fraction low-confidence [0.0,1.0]", typeid(float), (void *) &lowconfMemberMax, "^0(\\.[0-9]+)?|1(\\.0+)?$", MMseqsParameter::COMMAND_PROFILE | MMseqsParameter::COMMAND_EXPERT),
@@ -191,6 +192,7 @@ LocalParameters::LocalParameters() :
     structurealign.push_back(&PARAM_LDDT_THRESHOLD);
     structurealign.push_back(&PARAM_SORT_BY_STRUCTURE_BITS);
     structurealign.push_back(&PARAM_STANDIN_RESCORE);
+    structurealign.push_back(&PARAM_STANDIN_SCORE);
     structurealign.push_back(&PARAM_ALIGNMENT_TYPE);
     structurealign.push_back(&PARAM_EXACT_TMSCORE);
     structurealign.push_back(&PARAM_SUBMAT_12ST_SCALE);
@@ -469,6 +471,7 @@ LocalParameters::LocalParameters() :
     evalThr = 10;
     sortByStructureBits = 1;
     standinRescore = 0;
+    standinScore = 0;
     evalueNNMode = EVALUE_NN_MODE_AUTO;
     evalue12StProfileComp = 0;
     clusterSearch = 0;

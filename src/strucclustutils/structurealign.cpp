@@ -31,11 +31,13 @@ static bool compareHitsByStructureBits(const Matcher::result_t &first, const Mat
 }
 
 
-// --standin-rescore: multiplies each hit's score by the TM-score of its target to a stand-in structure, the best hit
-// (E-value < 1) of the query region sharing most residues with the hit, normalised by the hit's aligned query length.
-// Hits sharing fewer than 10 residues with every stand-in get the median TM-score. Returns false if there is no stand-in.
+// --standin-rescore: multiplies each hit's score by the TM-score (or lDDT, --standin-score) of its target to a stand-in
+// structure, the best hit (E-value < 1) of the query region sharing most residues with the hit, normalised by the hit's
+// aligned query length. Hits sharing fewer than 10 residues with every stand-in get the median score. Returns false if
+// there is no stand-in.
 static bool rescoreByStandin(std::vector<Matcher::result_t> &hits, unsigned int queryKey, bool skipIdentity,
-                             IndexReader *tcadbr, unsigned int thread_idx, TMaligner &tmaligner, Coordinate16 &tcoords) {
+                             IndexReader *tcadbr, unsigned int thread_idx, TMaligner &tmaligner, LDDTCalculator *lddtcalculator,
+                             int standinScore, Coordinate16 &tcoords) {
     const double maxStandinEvalue = 1.0;
     const size_t minShared = 10;
     const size_t n = hits.size();
@@ -114,6 +116,9 @@ static bool rescoreByStandin(std::vector<Matcher::result_t> &hits, unsigned int 
         float *sCa = tcoords.read(tcadbr->sequenceReader->getData(sId, thread_idx), sr.dbLen, tcadbr->sequenceReader->getEntryLen(sId));
         sx.assign(sCa, sCa + sr.dbLen); sy.assign(sCa + sr.dbLen, sCa + 2 * sr.dbLen); sz.assign(sCa + 2 * sr.dbLen, sCa + 3 * sr.dbLen);
         tmaligner.initQuery(sx.data(), sy.data(), sz.data(), NULL, sr.dbLen);
+        if (standinScore != 0) {
+            lddtcalculator->initQuery(sr.dbLen, sx.data(), sy.data(), sz.data());
+        }
         for (size_t i = 0; i < n; i++) {
             if (best[i] != (int) s) {
                 continue;
@@ -145,8 +150,16 @@ static bool rescoreByStandin(std::vector<Matcher::result_t> &hits, unsigned int 
             const Matcher::result_t &hr = hits[i];
             size_t hId = tcadbr->sequenceReader->getId(hr.dbKey);
             float *hCa = tcoords.read(tcadbr->sequenceReader->getData(hId, thread_idx), hr.dbLen, tcadbr->sequenceReader->getEntryLen(hId));
-            tm[i] = tmaligner.computeTMscore(hCa, hCa + hr.dbLen, hCa + 2 * hr.dbLen, hr.dbLen, firstS, firstH, bt,
-                                             (int) qPos[i].size()).tmscore;
+            double tmv = 0.0, lddtv = 0.0;
+            if (standinScore != 1) {
+                tmv = tmaligner.computeTMscore(hCa, hCa + hr.dbLen, hCa + 2 * hr.dbLen, hr.dbLen, firstS, firstH, bt,
+                                               (int) qPos[i].size()).tmscore;
+            }
+            if (standinScore != 0) {
+                lddtv = lddtcalculator->computeLDDTScore(hr.dbLen, firstS, firstH, bt, hCa, hCa + hr.dbLen, hCa + 2 * hr.dbLen).avgLddtScore
+                        * shared[i] / qPos[i].size();
+            }
+            tm[i] = (standinScore == 0) ? tmv : (standinScore == 1) ? lddtv : sqrt(tmv * lddtv);
         }
     }
 
@@ -514,8 +527,9 @@ int structurealign(int argc, const char **argv, const Command& command) {
                     std::max(q3DiDbr->sequenceReader->getMaxSeqLen() + 1, t3DiDbr.sequenceReader->getMaxSeqLen() + 1), false, true, par.exactTMscore);
         }
         LDDTCalculator *lddtcalculator = NULL;
-        if(needLDDT) {
-            lddtcalculator = new LDDTCalculator(q3DiDbr->sequenceReader->getMaxSeqLen() + 1,  t3DiDbr.sequenceReader->getMaxSeqLen() + 1);
+        if(needLDDT || (useStandin && par.standinScore != 0)) {
+            const unsigned int maxLen = std::max(q3DiDbr->sequenceReader->getMaxSeqLen(), t3DiDbr.sequenceReader->getMaxSeqLen()) + 1;
+            lddtcalculator = new LDDTCalculator(useStandin ? maxLen : q3DiDbr->sequenceReader->getMaxSeqLen() + 1,  t3DiDbr.sequenceReader->getMaxSeqLen() + 1);
         }
         Sequence qSeqAA(par.maxSeqLen, qAADbr->getDbtype(), (const BaseMatrix *) &subMatAA, 0, false, par.compBiasCorrection);
         Sequence qSeq3Di(par.maxSeqLen, query3Di12St ? Parameters::DBTYPE_AMINO_ACIDS : q3DiDbr->getDbtype(), (const BaseMatrix *) &subMat3Di, 0, false, par.compBiasCorrection);
@@ -771,7 +785,8 @@ int structurealign(int argc, const char **argv, const Command& command) {
 
             bool rescored = false;
             if (useStandin) {
-                rescored = rescoreByStandin(alignmentResult, queryKey, sameDB || par.includeIdentity, tcadbr, thread_idx, *tmaligner, tcoords);
+                rescored = rescoreByStandin(alignmentResult, queryKey, sameDB || par.includeIdentity, tcadbr, thread_idx, *tmaligner,
+                                            lddtcalculator, par.standinScore, tcoords);
             }
             if (alignmentResult.size() > 1) {
                 if(par.sortByStructureBits || rescored) {
@@ -791,7 +806,7 @@ int structurealign(int argc, const char **argv, const Command& command) {
         if(needTMaligner || useStandin){
             delete tmaligner;
         }
-        if(needLDDT){
+        if(lddtcalculator != NULL){
             delete lddtcalculator;
         }
         free(tinySubMat12St);
